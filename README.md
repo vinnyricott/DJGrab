@@ -15,7 +15,7 @@
 
 ## Install (Mac)
 
-1. Download the latest **DJ-Grab.zip** from [Releases](../../releases) and unzip it.
+1. **[Download DJ Grab](https://github.com/vinnyricott/djgrab/raw/main/download/DJ-Grab.zip)** and unzip it.
 2. Drag **DJ Grab** into Applications.
 3. The first time, right-click DJ Grab and choose **Open**, then **Open** again. macOS asks this once for apps from outside the App Store.
 4. A setup window asks for your DJ software, music folder and a few preferences. DJ Grab installs the tools it needs on first launch.
