@@ -1,0 +1,2 @@
+BS-RoFormer model code from python-audio-separator (MIT, Andrew Beveridge et al.),
+based on lucidrains/BS-RoFormer (MIT) and ZFTurbo/Music-Source-Separation-Training (MIT).
