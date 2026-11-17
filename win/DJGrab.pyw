@@ -41,7 +41,7 @@ def shown(v):
 
 DEFAULTS = {"output": str(Path.home() / "Music" / "DJ Grab"), "djApp": "serato", "sortMode": "off",
             "minQuality": 128, "normalizeLUFS": -10.0, "makeIntros": False, "autoUpdate": True,
-            "hookTease": "fits", "outroVersions": False, "introBars": 0, "welcomed": False}
+            "hookTease": "fits", "outroVersions": False, "introBars": 0, "welcomed": False, "preventSleep": True}
 
 
 class Settings(dict):
@@ -243,6 +243,8 @@ class SetupDialog(QDialog):
         f.addRow("Hook tease", self.hook)
         self.outro = QCheckBox("Outro versions (off by default)"); self.outro.setChecked(S["outroVersions"]); f.addRow(self.outro)
         self.upd = QCheckBox("Install updates automatically"); self.upd.setChecked(S["autoUpdate"]); f.addRow(self.upd)
+        self.awake = QCheckBox("Keep the computer awake while working (the screen can still turn off)")
+        self.awake.setChecked(S["preventSleep"]); f.addRow(self.awake)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
         bb.button(QDialogButtonBox.Ok).setText("Get Started" if first else "Save")
         bb.accepted.connect(self.save); f.addRow(bb)
@@ -256,7 +258,8 @@ class SetupDialog(QDialog):
         S.update(djApp=self.app.currentData(), output=self.out.text(), sortMode=self.sort.currentData(),
                  minQuality=self.q.currentData(), normalizeLUFS=self.norm.currentData(),
                  makeIntros=self.intros.isChecked(), hookTease=self.hook.currentData(),
-                 outroVersions=self.outro.isChecked(), autoUpdate=self.upd.isChecked(), welcomed=True)
+                 outroVersions=self.outro.isChecked(), autoUpdate=self.upd.isChecked(),
+                 preventSleep=self.awake.isChecked(), welcomed=True)
         S.save()
         Path(S["output"]).mkdir(parents=True, exist_ok=True)
         self.accept()
@@ -565,6 +568,7 @@ class Window(QMainWindow):
         self.seek_l = QLabel(""); self.seek_l.setStyleSheet("color: gray"); self.seek_l.hide()
         self.seek.sliderReleased.connect(lambda: PLAYER.seek(self.seek.value() / 1000 * PLAYER.position()[1]))
         tick = QTimer(self); tick.timeout.connect(self.update_seek); tick.start(250)
+        awake = QTimer(self); awake.timeout.connect(self.keep_awake); awake.start(5000)
         gear = QPushButton("Settings"); gear.clicked.connect(lambda: SetupDialog(self, first=False).exec())
         bar.addWidget(self.update_l, 1); bar.addWidget(self.update_b); bar.addWidget(self.seek_l); bar.addWidget(self.seek)
         bar.addWidget(stop); bar.addWidget(gear)
@@ -578,6 +582,19 @@ class Window(QMainWindow):
         self.latest = 0
         QTimer.singleShot(3000, self.check_update)
         t = QTimer(self); t.timeout.connect(self.check_update); t.start(3 * 3600 * 1000)
+
+    def keep_awake(self):
+        """While songs download or intros are made, Windows doesn't go to sleep on its own (Settings)."""
+        busy = bool(self.grab.runner or self.intros.runner) and S["preventSleep"]
+        if busy == getattr(self, "_awake", False):
+            return
+        self._awake = busy
+        try:
+            import ctypes
+            ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if busy else 0))
+        except Exception:
+            pass                       # not on Windows (tests)
 
     def update_seek(self):
         pos, dur = PLAYER.position()

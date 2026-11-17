@@ -83,7 +83,7 @@ def run():
     check("bar lines sit on the attack (not the peak)", np.all(np.abs(snapped[1:20] - bars[1:20]) < 0.006),
           str(np.round(snapped[1:4] - bars[1:4], 4)))
 
-    # grid on the off-beats gets fixed; a correct grid is left alone
+    # (half-beat grid move is switched off)
     orig, _, bars, _ = song()
     nb, _ = d.fix_half_beat(bars, {"markers": []}, orig, 120.0, "t")
     check("correct grid left alone", np.allclose(nb, bars))

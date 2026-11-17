@@ -1003,7 +1003,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 9               # intros: 8 bars for every song, bar lines on the hit's attack, quality gate
+INTRO_RULE = 10              # half-beat grid move taken back out (it moved good grids in bass / ghetto house)
 
 
 def _is_dance(p):
@@ -1018,7 +1018,11 @@ RULE_CHANGES = {
     7: lambda p, kind: kind == "intro",                      # every intro DJ Grab made: start / handover timing
     8: lambda p, kind: kind == "intro",                      # clean start on the attack, no drum fills that clash
     9: lambda p, kind: kind == "intro",                      # every intro 8 bars; bar lines on the hit's attack
+    10: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # grids wrongly moved half a beat: put back
 }
+HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3",
+                   "Michael Bibi. feat. Uniiqu3 - Bad Wolf (Original Mix).mp3",
+                   "Parris Mitchell feat. DJ Funk, Parris Mitchell, DJ Funk - Follow Me Ghetto (Acid).mp3"}
 
 
 def needs_recheck(st, k):
@@ -3566,7 +3570,8 @@ def process(path, bars, make_intro=True):
             write_grid = True
         bars_t, bpm = g["bars"], g["bpm"]
         if write_grid and sig is not None and len(bars_t) > 4:
-            bars_t, g = fix_half_beat(bars_t, g, orig, float(bpm), path.name)
+            # (fix_half_beat is off: in bass house and ghetto house the bassline and open hats sit between the
+            # kicks, and it moved good grids onto the off-beat - Bad Wolf, Let Me Bang. The beat tracker is right)
             bars_t, g = place_downbeats(bars_t, g, sig, orig, float(bpm), path.name)
             fb, moved = follow_band(bars_t, sig, bpm)
             if moved >= 0.006:                        # the band drifts: the grid follows it, marker every 8 bars

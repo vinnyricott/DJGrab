@@ -765,6 +765,7 @@ final class Store: ObservableObject {
             if Store.shared.tick % 60 == 5 { ShareData.flush() }          // every 5 min: send ratings that waited
             if Store.shared.tick == 2 || Store.shared.tick % 24 == 0 { ToolsStore.shared.tryWaiting() }   // 10 s after opening, then every 2 min
             if Store.shared.tick % 4 == 0 { Store.shared.flushCrates() }
+            KeepAwake.update(busy: ToolsStore.shared.running || Store.shared.busy)
             if Store.shared.tick % 24 == 12 { Store.shared.fixNames() }
         }
         refreshDrive()
@@ -1784,6 +1785,7 @@ struct SettingsView: View {
     @AppStorage("uiLook") private var look = "neon"
     @AppStorage("menuBarIcon") private var menuBar = true
     @AppStorage("djApp") private var djApp = "serato"
+    @AppStorage("preventSleep") private var preventSleep = true
     @AppStorage("shareData") private var shareData = true
     @AppStorage("previewVolume") private var previewVolume = 0.8
     @AppStorage("previewDevice") private var previewDevice = ""
@@ -1824,6 +1826,13 @@ struct SettingsView: View {
                         Text("Off: every song in your folder. Simple: one folder per genre (Hip Hop, R&B, Pop, Latin, Dance & House, Afro & Caribbean, Country, Rock). Detailed: also sub-genre folders (Hip Hop ▸ Drill), made only once a sub-genre has 3 songs. Only new downloads are sorted; your other music is never moved.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                }
+            }
+            Section("While working") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Keep the computer awake while working", isOn: $preventSleep)
+                    Text("While songs download or intros are being made, the Mac won't go to sleep on its own, so long runs (like overnight) finish. The screen can still turn off. It goes back to normal as soon as DJ Grab is done.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("DJ software") {
@@ -3377,6 +3386,22 @@ struct UpdateBar: View {
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
+        }
+    }
+}
+
+/// While intros or downloads are running, the Mac doesn't go to sleep on its own (the screen still can).
+/// Settings ▸ General ▸ "Keep the computer awake while working", on by default.
+enum KeepAwake {
+    private static var token: NSObjectProtocol?
+    static func update(busy: Bool) {
+        let want = busy && (UserDefaults.standard.object(forKey: "preventSleep") as? Bool ?? true)
+        if want && token == nil {
+            token = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated],
+                                                          reason: "DJ Grab is working on your songs")
+        } else if !want, let t = token {
+            ProcessInfo.processInfo.endActivity(t)
+            token = nil
         }
     }
 }
