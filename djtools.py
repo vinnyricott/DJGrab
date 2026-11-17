@@ -1003,7 +1003,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 10              # half-beat grid move taken back out (it moved good grids in bass / ghetto house)
+INTRO_RULE = 11              # handover moves limited to 30 ms; a song that needs an intro always gets one
 
 
 def _is_dance(p):
@@ -1019,8 +1019,10 @@ RULE_CHANGES = {
     8: lambda p, kind: kind == "intro",                      # clean start on the attack, no drum fills that clash
     9: lambda p, kind: kind == "intro",                      # every intro 8 bars; bar lines on the hit's attack
     10: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # grids wrongly moved half a beat: put back
+    11: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # song start moved too far / intro wrongly left out
 }
-HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3",
+HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3", "SECRETS NOTION w Cameron Hayes.mp3",
+                   "Turn On The Lights - Fred Again.mp3",
                    "Michael Bibi. feat. Uniiqu3 - Bad Wolf (Original Mix).mp3",
                    "Parris Mitchell feat. DJ Funk, Parris Mitchell, DJ Funk - Follow Me Ghetto (Acid).mp3"}
 
@@ -2252,7 +2254,9 @@ def _snap_bars(orig, bars):
                     pk = float(x.max())
                     base = float(np.percentile(np.abs(m[max(0, a_ - 4 * hop):a_ + 1]), 90)) if a_ > 0 else 0.0
                     k = np.nonzero(x > max(0.2 * pk, 2.0 * base))[0]
-                    onset = (a_ + int(k[0])) if len(k) else j * hop
+                    # loud already at the start of the window (dense music): no clear attack to find, so
+                    # the frame estimate is kept rather than pulling the bar line early
+                    onset = (a_ + int(k[0])) if len(k) and k[0] > hop // 2 else j * hop
                     out[i] = max(0.0, onset / SR - 0.002)
                 else:
                     out[i] = max(0.0, j * 0.004 - 0.004)
@@ -2565,7 +2569,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         # a whole bar of the song played as the intro's last bar only if it is a real pickup (a fill or a hit
         # well under the song): otherwise the song is heard starting a bar before the intro's 8 are up
         lv_ = lambda i, n: 20 * np.log10(float(np.mean(ev_[i:i + n])) + 1e-9)
-        if lv_(sb, anchor - sb) > lv_(anchor, 4) - 10.0:
+        if lv_(sb, anchor - sb) > lv_(anchor, 4) - 8.0:      # same line the phrase count uses (8 dB)
             pick = 0                # the lead-in has singing: it can't be part of the intro, the song follows the intro whole
     steady = info.get("drift", 0.0) <= 0.012   # drums from elsewhere in the song only lock on a steady tempo
     gen = n_bars - pick                                  # bars we make; the song's pickup fills the rest
@@ -2992,7 +2996,10 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
             ref = float(np.mean([i_on[max(0, (k * beat) // int(0.005 * SR) - 2):(k * beat) // int(0.005 * SR) + 3].max()
                                  for k in range(4)]))
             step = int(0.002 * SR)
-            cands = range(-beat // 2, beat // 2 + 1, step)
+            # only small slips (up to 30 ms). A bigger "better fit" is the off-beat bass or hats of house and
+            # garage, not the song's real beat: moving that far put songs a third of a beat off (Bad Wolf)
+            lim = int(0.030 * SR)
+            cands = range(-lim, lim + 1, step)
             best = max(cands, key=score)
             if abs(best) > int(0.012 * SR) and score(best) > 1.3 * score(0) and score(best) > 0.3 * ref:
                 lock = best
@@ -3689,26 +3696,21 @@ def process(path, bars, make_intro=True):
                 orig_song = orig[int(round(float(bars_t[s0_]) * SR)):]
                 flags = check_intro(audio, ibars, offset, float(bpm), orig_song)
                 if any(f in SERIOUS for f in flags) and not use_claps:
-                    # built again another way (the next-best version from another stretch of the song)
-                    log(f"{path.name}: intro failed the check ({', '.join(flags)}), building another")
+                    # built again another way (the next-best version from another stretch of the song); the
+                    # version with fewer problems is kept. A song that needs an intro always gets one: the
+                    # check's findings are named under the song so they can be heard and judged
+                    log(f"{path.name}: intro check found {', '.join(flags)}, building another")
                     try:
                         REDO_TRIED.add(REDO_PICK or "")
                         a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid={int(str(REDO_PICK).split(':')[0])} if REDO_PICK and str(REDO_PICK).split(':')[0].isdigit() else set()), bars)
                         f2 = check_intro(a2[0], a2[1], a2[4], float(bpm), orig_song)
-                        if not any(f in SERIOUS for f in f2):
+                        if sum(f in SERIOUS for f in f2) < sum(f in SERIOUS for f in flags):
                             audio, ibars, style, half_cue, offset = a2
                             flags = f2
                     except Exception:
                         log_exc("second intro")
                     finally:
                         REDO_TRIED.discard(REDO_PICK or "")
-                if any(f in SERIOUS for f in flags):
-                    log(f"{path.name}: no intro kept ({', '.join(flags)})")
-                    result["note"] = "Couldn't make a clean intro (" + ", ".join(f for f in flags if f in SERIOUS) + "): song left as it is"
-                    if intro_path(path).exists() and is_our_intro(intro_path(path)):
-                        retire_intro(intro_path(path))
-                        result["note"] += " · old intro moved to _To Delete"
-                    audio = None
                 if audio is not None:
                     tmp = work / "intro.wav"; save_wav(tmp, audio)
                     # built and tagged on the Mac's fast disk, then copied to the USB once (not rewritten there 3 times)

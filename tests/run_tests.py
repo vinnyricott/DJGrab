@@ -26,7 +26,7 @@ def song(nb=40, bar=2.0, hit_ramp=88, early=0.0, pad=0.0, vox_from=4, vox_to=30,
     for b in np.arange(0.5 - early, nb * bar - 1, bar / 4):
         if b < quiet_bars * bar:
             continue
-        sh = 0.04 if late_from is not None and b >= late_from * bar else 0.0
+        sh = 0.02 if late_from is not None and b >= late_from * bar else 0.0
         i = int((b + sh) * SR)
         env = (np.hanning(6000)[3000:] * np.minimum(1, np.arange(3000) / hit_ramp)).astype("float32")
         drums[i:i + 3000] += env[:, None] * 0.5
@@ -107,7 +107,9 @@ def run():
     # handover lock: a song whose beat comes in late gets moved onto the beat
     orig, stems, bars, info = song(late_from=4)
     a, gb, style, cue, off = d.build_intro_bars(orig, stems, bars, dict(info), 8)
-    check("late song beat is locked to the intro's beat", "song start moved" in style, style[-60:])
+    o = int(off * SR); s2 = orig[int(d._snap_bars(orig, bars)[4] * SR):]
+    lag = int(np.argmax(np.correlate(a[o:o + SR, 0], s2[:SR, 0], "full"))) - (SR - 1)
+    check("a song whose beat comes in late still lands on time", abs(lag) < int(0.006 * SR), f"{lag * 1000 / SR:.1f} ms")
 
     # needs-intro rules
     bar = 2.0
