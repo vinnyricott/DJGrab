@@ -271,6 +271,38 @@ def pads(cues):
     return [(i, n, ms, rgb) for i, (n, ms, rgb) in enumerate(cues[:LAST_SLOT])]
 
 
+def fix_half_beat(bars_t, g, orig, bpm, name):
+    """The beat tracker can lock onto the off-beats (in house the open hi-hat on the "and" is often louder
+    than the kick), which puts every beat - and the start of every intro - half a beat late. The kick is on
+    the beat: if the low end hits clearly harder half way between the beats than on them, the whole grid
+    moves half a beat earlier."""
+    try:
+        pbt = 60.0 / float(bpm)
+        mono = orig.mean(axis=1) if orig.ndim == 2 else orig
+        end = min(len(mono), int((float(bars_t[min(64, len(bars_t) - 1)]) + 1) * SR))
+        lo = _lowpass(mono[:end, None], 120.0)[:, 0]
+        hop = int(0.005 * SR)
+        env = np.sqrt(np.convolve(lo ** 2, np.ones(hop) / hop, "same"))[::hop]
+        on = np.maximum(0.0, np.diff(env, prepend=env[0]))
+        beats = np.concatenate([b + pbt * np.arange(4) for b in np.asarray(bars_t, float)[:64]])
+        def score(off):
+            idx = ((beats + off) / 0.005).astype(int)
+            idx = idx[(idx >= 4) & (idx < len(on) - 4)]
+            return float(np.mean([on[i - 4:i + 5].max() for i in idx])) if len(idx) else 0.0
+        s_on, s_half = score(0.0), score(pbt / 2)
+        if s_half > 1.6 * s_on and s_half > 0:
+            nb_ = np.asarray(bars_t, float) - pbt / 2
+            if nb_[0] < -0.02:
+                nb_ = nb_ + 4 * pbt
+                nb_ = np.concatenate([[nb_[0] - 4 * pbt], nb_]) if nb_[0] - 4 * pbt >= -0.02 else nb_
+            log(f"{name}: grid was on the off-beats (kick {s_on:.4f} on the beat vs {s_half:.4f} between), moved half a beat")
+            m = [(max(0.0, p - pbt / 2), n, b) for p, n, b in g.get("markers") or []]
+            return nb_, dict(g, bars=nb_, markers=m or [(float(max(0.0, nb_[0])), None, bpm)])
+    except Exception:
+        log_exc(f"{name}: half-beat check")
+    return bars_t, g
+
+
 def place_downbeats(bars_t, g, sig, orig, bpm, name):
     """Beat 1 on the song's first note (where the Start cue goes), when that note sits on a beat: the
     whole grid keeps its tempo and beats and only its bar count moves (1, 2 or 3 beats)."""
@@ -961,7 +993,27 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 5               # ad-libs at the start no longer count as vocals
+INTRO_RULE = 7               # intros: clean start on beat 1, half-beat grid check, handover locked to the song's beat
+
+
+def _is_dance(p):
+    parts = Path(p).parts
+    return (len(parts) >= 3 and parts[-3] in LONG_INTRO_TOPS) or (len(parts) >= 2 and parts[-2] in LONG_INTRO_SUBS)
+
+
+# What each intro-rule update changed, and which finished songs it can change. A plain Start re-checks only
+# those songs (made under an older rule and affected) and skips everything else that's already done.
+RULE_CHANGES = {
+    6: lambda p, kind: kind == "intro" and _is_dance(p),     # house / dance: many intros no longer needed
+    7: lambda p, kind: kind == "intro",                      # every intro DJ Grab made: start / handover timing
+}
+
+
+def needs_recheck(st, k):
+    """A finished song that a newer rule could change (so a plain Start runs it again)."""
+    made = st.get("rule", {}).get(k, 0)
+    kind = st.get("kind", {}).get(k)
+    return any(v > made and f(k, kind) for v, f in RULE_CHANGES.items())
 GRID_RULE = 26                # bumped whenever what DJ Grab writes into songs changes (grid, cues, comment,
                              # name labels, intro rules): every finished song gets one quick recheck
                              # 2: edited-song grids  3: no Vocals cue, comments, (Acap In/Out), no tension on soft entries  4: era with accents  5: no name labels on originals  6: carried beat must fit the opening  7: skip a quiet opening nothing fits over (pool style)  8: pool-style build (full low end, 4-bar loop)            # results from older versions (Serato-grid cues) get redone
@@ -2867,8 +2919,44 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         intro = np.concatenate([pre * 0.5, intro])
         gen_bars = gen_bars + lead / SR
         lens = [lens[0] + lead] + list(lens[1:])
+    # no jump into the song: the intro's beat, carried on at its own tempo, has to land on the song's first
+    # hits. If the song's hits sit a little early or late against that (a grid line a few ms or half a beat
+    # off where the song comes in), the song's start is moved to match, so the beat runs straight through
+    lock = 0
+    try:
+        beat = int(round(sum(lens[-4:]) / (4 * min(4, len(lens)))))  if lens else 0
+        if beat > 0 and len(song) > 8 * beat:
+            def pulse(x):
+                m = x.mean(axis=1) if x.ndim == 2 else x
+                h = int(0.005 * SR)
+                e = np.sqrt(np.convolve(m ** 2, np.ones(h) / h, "same"))[::h]
+                return np.maximum(0.0, np.diff(e, prepend=e[0]))
+            s_on = pulse(song[:8 * beat + beat])
+            i_on = pulse(intro[-4 * beat:])
+            def score(d):                        # d: song samples to skip (+) or add in front (-)
+                ks = [(k * beat + d) // int(0.005 * SR) for k in range(8)]
+                return float(np.mean([s_on[max(0, j - 2):j + 3].max() for j in ks if 0 <= j < len(s_on) - 3] or [0]))
+            ref = float(np.mean([i_on[max(0, (k * beat) // int(0.005 * SR) - 2):(k * beat) // int(0.005 * SR) + 3].max()
+                                 for k in range(4)]))
+            step = int(0.002 * SR)
+            cands = range(-beat // 2, beat // 2 + 1, step)
+            best = max(cands, key=score)
+            if abs(best) > int(0.012 * SR) and score(best) > 1.3 * score(0) and score(best) > 0.3 * ref:
+                lock = best
+    except Exception:
+        log_exc("handover lock")
+    if lock > 0:
+        song = song[lock:]
+        style += f", song start moved {lock * 1000 // SR} ms to stay on the beat"
+    elif lock < 0:
+        a1 = int(round(bt[info.get("song_from", info["sb"])] * SR))
+        lead_in = orig[max(0, a1 + lock):a1].astype("float32")
+        if lead_in.shape[1] != song.shape[1]:
+            lead_in = np.repeat(lead_in[:, :1], song.shape[1], axis=1)
+        song = np.concatenate([lead_in, song.astype("float32")])
+        style += f", song start moved {-lock * 1000 // SR} ms earlier to stay on the beat"
     audio = _xjoin([intro, song.astype("float32")])
-    return audio, gen_bars, style, cue, sum(lens) / SR
+    return audio, gen_bars, style, cue, sum(lens) / SR - lock / SR
 
 
 # ------------------------------------------------------------------ structure
@@ -2977,7 +3065,7 @@ def retire_intro(f):
         djgrab.purge_serato_refs(vol, "_To Delete/")           # (and anything else waiting in _To Delete)
 
 
-def needs_intro(times, bar):
+def needs_intro(times, bar, dance=False):
     """DJ-pool rule: a song needs an intro version unless it already opens with 8 clean bars that you can
     mix over, meaning no vocals AND a real beat (drums at least ~40% as strong as at the drop)."""
     v, st = times.get("Vocals"), times.get("Start")
@@ -2991,6 +3079,14 @@ def needs_intro(times, bar):
         # beat without them), so only a stray sound or two (under 10% of the opening) counts as clean
         early_vocals = times["_vox_share"] >= 0.1 or times["_vox_run"] >= 0.2
     weak_beat = times.get("_intro_beat", 1.0) < 0.4
+    if dance:
+        # house / dance music is made for DJs: original and extended mixes open on drums, percussion or hats
+        # that build (often under the loud part's level), and vocal chops or chants over that beat are mixed
+        # over all the time. DJ pools rarely make intro edits for them. So only a song that has no beat at all
+        # to start, or a real sung / rapped line from the top, gets one
+        early_vocals = v is not None and (v - st) < 8 * bar - 0.25 * bar and (
+            times.get("_vox_share", 1.0) >= 0.4 or times.get("_vox_run", 1.0) >= 0.5)
+        weak_beat = times.get("_intro_beat", 1.0) < 0.12
     return early_vocals or weak_beat
 
 
@@ -3379,6 +3475,7 @@ def process(path, bars, make_intro=True):
             write_grid = True
         bars_t, bpm = g["bars"], g["bpm"]
         if write_grid and sig is not None and len(bars_t) > 4:
+            bars_t, g = fix_half_beat(bars_t, g, orig, float(bpm), path.name)
             bars_t, g = place_downbeats(bars_t, g, sig, orig, float(bpm), path.name)
             fb, moved = follow_band(bars_t, sig, bpm)
             if moved >= 0.006:                        # the band drifts: the grid follows it, marker every 8 bars
@@ -3434,7 +3531,8 @@ def process(path, bars, make_intro=True):
         result = {"status": "done", "cues": written, "bpm": round(float(bpm), 1)}
         sig_parts = [f"{float(bpm):.2f}", str(int(round(float(bars_t[0]) * 100)))] + \
                     [f"{n}:{int(round(v * 20))}" for n, v in sorted(times.items()) if isinstance(v, float) and not n.startswith("_")]
-        need = needs_intro(times, bar)
+        _top, _sub = path.parent.parent.name, path.parent.name
+        need = needs_intro(times, bar, dance=_top in LONG_INTRO_TOPS or _sub in LONG_INTRO_SUBS)
         # a short spoken or a cappella opening (up to 4 bars, no beat) and then 8 clean bars of the full beat
         # with no vocals (Timbaland's Give It To Me): the song already has its own DJ intro, so a made one
         # would just be a second intro in front of it
@@ -3764,7 +3862,8 @@ def folder_status(root):
     A folder in the middle of a redo only counts songs redone since that redo started."""
     st = load_state()
     when, redo = st.get("when", {}), st.get("redo", {})
-    done_keys = {unicodedata.normalize("NFC", k) for k, v in st["done"].items() if v and v.endswith(ENGINE)}
+    done_keys = {unicodedata.normalize("NFC", k) for k, v in st["done"].items()
+                 if v and v.endswith(ENGINE) and not needs_recheck(st, k)}      # an update to check = not done yet
     out = {}
     for top in sorted(os.listdir(root)):
         tp = os.path.join(root, top)
@@ -3807,9 +3906,10 @@ def batch(root, bars, redo=False):
     def is_done(p):
         k = unicodedata.normalize("NFC", p)
         if since is None:
-            # a plain run only picks up what changed: songs new to the folder (or renamed) and ones that
-            # failed or were put off. Rule updates don't make finished folders run again; Redo does that
-            return ran(st, k)
+            # a plain run picks up what changed: songs new to the folder (or renamed), ones that failed or
+            # were put off, and finished songs an update could change (see RULE_CHANGES). Everything else
+            # already done is skipped in a quick scan
+            return ran(st, k) and not (MAKE_INTRO and needs_recheck(st, k))
         if settled(st, k):
             return True
         if not (st["done"].get(k) or "").endswith(ENGINE):

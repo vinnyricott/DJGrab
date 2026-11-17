@@ -2501,7 +2501,7 @@ final class ToolsStore: ObservableObject {
         return folder.isEmpty ? "Library" : folder.replacingOccurrences(of: "/", with: " ▸ ")
     }
 
-    func start(files: [String]?, quiet: Bool, mode: String = "files") {
+    func start(files: [String]?, quiet: Bool, mode: String = "files", forceRedo: Bool = false) {
         if running {
             // busy with another song: line these up next instead of ignoring the click
             if let f = files, !quiet {
@@ -2532,7 +2532,7 @@ final class ToolsStore: ObservableObject {
         var args = [toolsPath, files == nil ? "batch" : mode]
         if let f = files { args += f }
         // Start on a folder that's already finished = do it again, overwriting the old cues and intros
-        let redo = files == nil && isComplete(folder)
+        let redo = files == nil && (forceRedo || isComplete(folder))
         if redo { args.append("--redo") }
         if files == nil && !quiet { results.removeAll() }      // a new folder run starts with a fresh list
         lastFiles = files
@@ -2572,6 +2572,7 @@ final class ToolsStore: ObservableObject {
                 guard let self = self else { return }
                 self.running = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.tryWaiting() }   // queued songs go next
+                self.refreshStatus()                     // the folder menu's "x of y done" counts
                 self.redoing = nil
                 self.etaTimer?.invalidate(); self.etaTimer = nil
                 self.proc = nil
@@ -2690,6 +2691,9 @@ final class ToolsStore: ObservableObject {
             return name
         }
         let name = folder.contains("/") ? "      " + folder.replacingOccurrences(of: "/", with: " ▸ ") : folder
+        if running && folder == self.folder && lastFiles == nil && total > 0 {      // the folder being run: live count
+            return name + "  (\(done) of \(total) done)"
+        }
         guard let c = folderStatus[folder.precomposedStringWithCanonicalMapping], c.count == 2, c[1] > 0 else { return name }
         if c[0] >= c[1] { return "✓ " + name }
         if c[0] > 0 { return name + "  (\(c[0]) of \(c[1]) done)" }
@@ -2905,6 +2909,14 @@ struct FolderSongs: View {
                             VStack(spacing: 1) { PlayButton(path: p); Text("Original").font(.system(size: 9)).foregroundStyle(.secondary) }
                             if let ip = introFile(p) {
                                 VStack(spacing: 1) { PlayButton(path: ip); Text("Intro").font(.system(size: 9)).foregroundStyle(.secondary) }
+                                Button { tools.noIntro(song: p, intro: ip); load() } label: {
+                                    VStack(spacing: 1) {
+                                        Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 18))
+                                        Text("Use original").font(.system(size: 9))
+                                    }
+                                }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .help("Remove this song's intro version (moved to _To Delete) and keep only the original")
                             }
                         }
                         .padding(.horizontal, 8).padding(.vertical, 3)
@@ -3081,28 +3093,38 @@ struct ToolsView: View {
                 }
                 if tools.running {
                     Button { tools.restart() } label: { Image(systemName: "arrow.clockwise") }
+                        .fixedSize()
                         .help("Restart this run (picks up updates, carries on where it left off)")
-                    Button("Pause") { tools.pause() }
+                    Button("Pause") { tools.pause() }.fixedSize()
                 } else {
                     if tools.userPaused {
                         Button { tools.resume() } label: { Label("Resume", systemImage: "play.fill") }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).fixedSize()
                             .help("Carry on with the paused run where it left off")
                     }
                     if tools.userPaused {
                         Button(tools.isComplete(folder) ? "Redo" : "Start") { tools.folder = folder; tools.start() }
+                            .fixedSize()
                     } else {
                         Button(tools.isComplete(folder) ? "Redo" : "Start") { tools.folder = folder; tools.start() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).fixedSize()
                     }
                 }
+                if !tools.running && !tools.isComplete(folder) {
+                    Button("Redo all") { tools.folder = folder; tools.start(files: nil, quiet: false, forceRedo: true) }
+                        .fixedSize()
+                        .help("Run every song in this folder again with the newest rules, including songs already done (old intros that aren't needed anymore move to _To Delete)")
+                }
                 Button(browsing ? "Hide songs" : "Songs") { browsing.toggle() }
+                    .fixedSize()
                     .help("List the songs in this folder to listen to them (and their intros) without running anything")
                 if tools.total > 0 {
-                    Text("\(tools.done) / \(tools.total)").foregroundStyle(.secondary).monospacedDigit()
+                    Text("\(tools.done) / \(tools.total)").foregroundStyle(.secondary).monospacedDigit().fixedSize()
                 }
-                Spacer()
-                Text(tools.eta).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+            }
+            if !tools.eta.isEmpty {                 // its own line, so it's never squeezed or cut off
+                Text(tools.eta).font(.caption).foregroundStyle(.secondary)
             }
             if tools.running && !tools.current.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
@@ -3187,6 +3209,16 @@ struct ToolsView: View {
                                 Text("Intro").font(.system(size: 9)).foregroundStyle(.secondary)
                             }
                             .help("Play the intro version from the start")
+                        }
+                        if let ip = r.path, let song = r.song ?? Optional(ip.replacingOccurrences(of: " (Intro).mp3", with: ".mp3")) {
+                            Button { tools.noIntro(song: song, intro: ip) } label: {
+                                VStack(spacing: 1) {
+                                    Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 18))
+                                    Text("Use original").font(.system(size: 9))
+                                }
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .help("Don't use an intro for this song: the intro version moves to _To Delete (nothing is deleted) and this song won't get one again")
                         }
                         let v = ratings.ratings[r.path!] ?? 0
                         Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { ratings.rate(r, 1) } } label: {
