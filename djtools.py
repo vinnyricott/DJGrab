@@ -1006,7 +1006,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 13              # every intro bar checked to be in time with the last (no loop or handover jumps)
+INTRO_RULE = 14              # intro bars in time with each other; beat 1 heard whole; repairs before giving up
 
 
 def _is_dance(p):
@@ -1025,9 +1025,10 @@ RULE_CHANGES = {
     11: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # song start moved too far / intro wrongly left out
     12: lambda p, kind: kind == "intro",                     # intro versions get a Song cue
     13: lambda p, kind: Path(p).name in BEAT_JUMPED,         # intros whose beat jumped mid-intro: built again
+    14: lambda p, kind: Path(p).name in BEAT_JUMPED,         # beat 1 cut off (hit ahead of the bar line): built again
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
-               "ROSE & Bruno Mars - APT. (Clean).mp3"}
+               "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
 HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3", "SECRETS NOTION w Cameron Hayes.mp3",
                    "Turn On The Lights - Fred Again.mp3",
                    "Michael Bibi. feat. Uniiqu3 - Bad Wolf (Original Mix).mp3",
@@ -2961,8 +2962,15 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
     # smeared before the 1. Every bar and cue moves with it
     pre_n = int(0.030 * SR)
     a0 = int(round(bt[src] * SR))
-    if len(intro) > int(0.06 * SR) and a0 >= pre_n:
-        pre = orig[a0 - pre_n:a0].astype("float32")
+    b1 = int(lens[0]) if len(lens) > 1 else 0
+    if len(intro) > int(0.06 * SR) and (b1 >= pre_n or a0 >= pre_n):
+        # what comes just before beat 1 is taken from the intro itself, just before its own bar 2 (the same
+        # beat, so a hit that starts a little ahead of the bar line is heard whole). The intro's bars can come
+        # from other parts of the song (or studio stems), so the song's own audio before this bar may not match
+        if b1 >= pre_n:
+            pre = intro[b1 - pre_n:b1].astype("float32")
+        else:
+            pre = orig[a0 - pre_n:a0].astype("float32")
         if pre.shape[1] != intro.shape[1]:
             pre = np.repeat(pre[:, :1], intro.shape[1], axis=1)
         w = np.concatenate([pre, intro[:int(0.040 * SR)]])
@@ -3521,14 +3529,19 @@ def quality_gate(audio, ibars, offset, bpm, song=None):
     beat = 60.0 / bpm
     try:                                   # every intro bar and the song's first 2 bars, each in time with the last
         st = [float(t) for t in list(ibars) if float(t) < offset - beat] + [offset + k * 4 * beat for k in range(3)]
-        if bar_jumps(audio, st, beat):
+        jb, pos = bar_jumps(audio, st, beat, detail=True)
+        if jb:
             out.append("beat jumps")
+        # the intro's hits sit clearly ahead of its bar lines: beat 1 started before the file does (cut off)
+        p01 = [p for p, r in pos[:2] if r >= 3]
+        if len(p01) == 2 and -0.045 < min(p01) and max(p01) < -0.010:     # (further off is the off-beat, not beat 1)
+            out.append("cut-off start")
     except Exception:
         pass
     h = int(0.001 * SR)
     m = np.abs(audio[:int(0.06 * SR)]).max(axis=1)
     env = np.array([m[k:k + h].max() for k in range(0, len(m) - h, h)])
-    if len(env) > 10:
+    if len(env) > 10 and "cut-off start" not in out:
         att = int(np.argmax(np.diff(env, prepend=env[0])))
         if env[:max(1, att - 4)].max() > 0.35 * env.max() or env[0] > 0.5 * env.max():
             out.append("cut-off start")
