@@ -545,7 +545,8 @@ class Window(QMainWindow):
                                  creationflags=NO_WINDOW)
                 QTimer.singleShot(0, QApplication.quit)
             except Exception as ex:
-                QTimer.singleShot(0, lambda: self.update_l.setText(f"Update failed: {ex}"))
+                msg = str(ex)
+                QTimer.singleShot(0, lambda: self.update_l.setText(f"Update failed: {msg}"))
         threading.Thread(target=work, daemon=True).start()
 
 
