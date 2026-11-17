@@ -1003,7 +1003,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 11              # handover moves limited to 30 ms; a song that needs an intro always gets one
+INTRO_RULE = 11              # handover moves limited to 30 ms; an intro that fails the check twice isn't kept
 
 
 def _is_dance(p):
@@ -3697,8 +3697,7 @@ def process(path, bars, make_intro=True):
                 flags = check_intro(audio, ibars, offset, float(bpm), orig_song)
                 if any(f in SERIOUS for f in flags) and not use_claps:
                     # built again another way (the next-best version from another stretch of the song); the
-                    # version with fewer problems is kept. A song that needs an intro always gets one: the
-                    # check's findings are named under the song so they can be heard and judged
+                    # version with fewer problems is kept, and if it still isn't clean there's no intro
                     log(f"{path.name}: intro check found {', '.join(flags)}, building another")
                     try:
                         REDO_TRIED.add(REDO_PICK or "")
@@ -3711,6 +3710,14 @@ def process(path, bars, make_intro=True):
                         log_exc("second intro")
                     finally:
                         REDO_TRIED.discard(REDO_PICK or "")
+                if any(f in SERIOUS for f in flags):
+                    # quality first: if neither version is clean, no intro is kept (the song is left as it is)
+                    log(f"{path.name}: no intro kept ({', '.join(flags)})")
+                    result["note"] = "Couldn't make a clean intro (" + ", ".join(f for f in flags if f in SERIOUS) + "): song left as it is"
+                    if intro_path(path).exists() and is_our_intro(intro_path(path)):
+                        retire_intro(intro_path(path))
+                        result["note"] += " · old intro moved to _To Delete"
+                    audio = None
                 if audio is not None:
                     tmp = work / "intro.wav"; save_wav(tmp, audio)
                     # built and tagged on the Mac's fast disk, then copied to the USB once (not rewritten there 3 times)
