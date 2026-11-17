@@ -1006,7 +1006,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 14              # intro bars in time with each other; beat 1 heard whole; repairs before giving up
+INTRO_RULE = 15              # up to 3 intro versions; if none is clean the best is kept and flagged for review
 
 
 def _is_dance(p):
@@ -1026,9 +1026,15 @@ RULE_CHANGES = {
     12: lambda p, kind: kind == "intro",                     # intro versions get a Song cue
     13: lambda p, kind: Path(p).name in BEAT_JUMPED,         # intros whose beat jumped mid-intro: built again
     14: lambda p, kind: Path(p).name in BEAT_JUMPED,         # beat 1 cut off (hit ahead of the bar line): built again
+    15: lambda p, kind: Path(p).name in NO_CLEAN_INTRO,      # left without an intro after 2 tries: 3 tries, best kept and flagged
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
+NO_CLEAN_INTRO = {"17 - MK.mp3", "A Guy Called Gerald - Voodoo Ray.mp3", "After Hours - Waterfalls (4am Mix).mp3",
+                  "Bee Gees - Stayin' Alive.mp3", "Before I Let Go - Frankie Beverly.mp3",
+                  "Bill Withers - Just The Two Of Us (Tall Boys love nwantiti (ah ah ah) Edit).mp3",
+                  "Blackstreet - No Diggity - Uncensored.mp3", "Bobby Brown - Every Little Step I Take.mp3",
+                  "Brick & Lace - Love Is Wicked.mp3", "Turn On The Lights - Fred Again.mp3"}
 HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3", "SECRETS NOTION w Cameron Hayes.mp3",
                    "Turn On The Lights - Fred Again.mp3",
                    "Michael Bibi. feat. Uniiqu3 - Bad Wolf (Original Mix).mp3",
