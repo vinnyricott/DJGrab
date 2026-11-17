@@ -1006,7 +1006,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 12              # intro versions: Start, Halfway, Song (where the song comes in), then the song's cues
+INTRO_RULE = 13              # every intro bar checked to be in time with the last (no loop or handover jumps)
 
 
 def _is_dance(p):
@@ -1024,7 +1024,10 @@ RULE_CHANGES = {
     10: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # grids wrongly moved half a beat: put back
     11: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # song start moved too far / intro wrongly left out
     12: lambda p, kind: kind == "intro",                     # intro versions get a Song cue
+    13: lambda p, kind: Path(p).name in BEAT_JUMPED,         # intros whose beat jumped mid-intro: built again
 }
+BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
+               "ROSE & Bruno Mars - APT. (Clean).mp3"}
 HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3", "SECRETS NOTION w Cameron Hayes.mp3",
                    "Turn On The Lights - Fred Again.mp3",
                    "Michael Bibi. feat. Uniiqu3 - Bad Wolf (Original Mix).mp3",
@@ -3308,6 +3311,51 @@ def check_intro(audio, ibars, offset, bpm, song=None):
     return flags
 
 
+def bar_jumps(audio, starts, beat):
+    """Where the beat jumps from one bar to the next: a bar whose hits sit clearly on one spot against the
+    grid, followed by a bar whose hits sit clearly somewhere else (a loop seam or handover out of time).
+    Two measures have to agree: the grid position of each bar's hits, and how the two bars line up with each
+    other. Returns the bar numbers (0 = the first) that start out of time."""
+    x = audio.mean(axis=1) if audio.ndim == 2 else audio
+    h = 0.005; hp = int(h * SR)
+    e = np.sqrt(np.convolve(np.asarray(x, "float32") ** 2, np.ones(hp, "float32") / hp, "same"))[::hp]
+    o = np.maximum(0.0, np.diff(e, prepend=e[0]))
+    n = int(round(4 * beat / h)); L = int(beat / 2 / h)
+    ds = np.arange(-beat / 2, beat / 2, h)
+    pos, segs = [], []
+    for t0 in starts:
+        i0 = int(round(t0 / h))
+        if i0 < 0 or i0 + n + L + 2 >= len(o):
+            break
+        idx = np.clip(np.round((t0 + np.arange(4)[:, None] * beat + ds[None, :]) / h).astype(int), 1, len(o) - 2)
+        sc = np.maximum(np.maximum(o[idx - 1], o[idx]), o[idx + 1]).sum(0)
+        k = int(np.argmax(sc))
+        hits = np.maximum(np.maximum(o[idx[:, k] - 1], o[idx[:, k]]), o[idx[:, k] + 1])
+        steady = int((hits > 0.2 * hits.max()).sum()) >= 3          # a real beat, not a few stray sounds
+        pos.append((ds[k], sc[k] / (np.median(sc) + 1e-12) if steady else 0.0))
+        segs.append(o[i0:i0 + n])
+    circ = lambda d: (d + beat / 2) % beat - beat / 2
+    out = []
+    prev = None                                  # the last bar with a clear, steady beat
+    for k in range(len(pos)):
+        if pos[k][1] < 3:
+            continue
+        if prev is not None:
+            p0, p1 = pos[prev][0], pos[k][0]
+            d = circ(p1 - p0)
+            if abs(d) >= 0.09:
+                a = segs[prev] - segs[prev].mean(); b = segs[k] - segs[k].mean()
+                nm = float(np.linalg.norm(a) * np.linalg.norm(b)) + 1e-12
+                c = np.array([np.dot(a[max(0, -l):n - max(0, l)], b[max(0, l):n - max(0, -l)]) for l in range(-L, L + 1)]) / nm
+                j = int(np.argmax(c)); lag = (j - L) * h
+                nxt = next((m for m in range(k + 1, len(pos)) if pos[m][1] >= 1.5), None)   # the bar after, if it has a beat
+                stays = nxt is None or abs(circ(pos[nxt][0] - p1)) < 0.045   # a one-bar fill that comes back is the song's own pattern
+                if stays and abs(lag) > 0.05 and c[j] >= 0.15 and c[j] > 1.5 * max(c[L], 0.0) and abs(circ(d - lag)) < 0.06:
+                    out.append(k)
+        prev = k
+    return out
+
+
 SERIOUS = ("cut-off start", "beat jumps", "drums clash")
 
 
@@ -3319,6 +3367,12 @@ def quality_gate(audio, ibars, offset, bpm, song=None):
       drums clash:   hits in the song's first bars that the original song doesn't have, off its beat"""
     out = []
     beat = 60.0 / bpm
+    try:                                   # every intro bar and the song's first 2 bars, each in time with the last
+        st = [float(t) for t in list(ibars) if float(t) < offset - beat] + [offset + k * 4 * beat for k in range(3)]
+        if bar_jumps(audio, st, beat):
+            out.append("beat jumps")
+    except Exception:
+        pass
     h = int(0.001 * SR)
     m = np.abs(audio[:int(0.06 * SR)]).max(axis=1)
     env = np.array([m[k:k + h].max() for k in range(0, len(m) - h, h)])
@@ -3337,7 +3391,7 @@ def quality_gate(audio, ibars, offset, bpm, song=None):
         at = lambda t: seg[max(0, int(t / 0.005) - 2):int(t / 0.005) + 3].max() if int(t / 0.005) < len(seg) else 0.0
         on = np.mean([at(k * beat) for k in range(8)])
         off = max(np.mean([at(k * beat + d) for k in range(8)]) for d in (0.02, 0.03, -0.02, -0.03))
-        if off > 1.4 * on and off > 0:
+        if off > 1.4 * on and off > 0 and "beat jumps" not in out:
             out.append("beat jumps")
         if song is not None and len(song) >= int(16 * beat * SR):
             a = onsets(audio[o0:o0 + int(16 * beat * SR)])
