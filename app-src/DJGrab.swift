@@ -572,6 +572,7 @@ final class Store: ObservableObject {
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
         env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") ?? "fits"
         env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
+        env["DJGRAB_SPEED"] = UserDefaults.standard.string(forKey: "workSpeed") ?? "balanced"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
         p.environment = env
 
@@ -1786,6 +1787,7 @@ struct SettingsView: View {
     @AppStorage("menuBarIcon") private var menuBar = true
     @AppStorage("djApp") private var djApp = "serato"
     @AppStorage("preventSleep") private var preventSleep = true
+    @AppStorage("workSpeed") private var workSpeed = "balanced"
     @AppStorage("shareData") private var shareData = true
     @AppStorage("previewVolume") private var previewVolume = 0.8
     @AppStorage("previewDevice") private var previewDevice = ""
@@ -1832,6 +1834,15 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Toggle("Keep the computer awake while working", isOn: $preventSleep)
                     Text("While songs download or intros are being made, the Mac won't go to sleep on its own, so long runs (like overnight) finish. The screen can still turn off. It goes back to normal as soon as DJ Grab is done.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("Speed", selection: $workSpeed) {
+                        Text("Balanced").tag("balanced")
+                        Text("Background").tag("background")
+                        Text("Full speed").tag("full")
+                    }
+                    Text("Balanced: DJ Grab uses about half the processor and gives way to other apps, so you can keep working while it runs. Background: barely noticeable, but songs take longer. Full speed: fastest, but other apps may lag. Takes effect from the next song.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -2580,6 +2591,7 @@ final class ToolsStore: ObservableObject {
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
         env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") ?? "fits"
         env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
+        env["DJGRAB_SPEED"] = UserDefaults.standard.string(forKey: "workSpeed") ?? "balanced"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
         if !isAdmin { env["DJGRAB_PLAIN"] = "1" }     // no renaming, no crates: only cues + intro versions
         p.environment = env
@@ -2714,8 +2726,7 @@ final class ToolsStore: ObservableObject {
             let name = u.lastPathComponent + "  —  " + (u.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
             guard let c = chosenStatus[folder], c.count == 2, c[1] > 0 else { return name }
             if c[0] >= c[1] { return "✓ " + name }
-            if c[0] > 0 { return name + "  (\(c[0]) of \(c[1]) done)" }
-            return name
+            return name + "  (\(c[0]) of \(c[1]) done)"
         }
         let name = folder.contains("/") ? "      " + folder.replacingOccurrences(of: "/", with: " ▸ ") : folder
         if running && folder == self.folder && lastFiles == nil && total > 0 {      // the folder being run: live count
@@ -2723,8 +2734,7 @@ final class ToolsStore: ObservableObject {
         }
         guard let c = folderStatus[folder.precomposedStringWithCanonicalMapping], c.count == 2, c[1] > 0 else { return name }
         if c[0] >= c[1] { return "✓ " + name }
-        if c[0] > 0 { return name + "  (\(c[0]) of \(c[1]) done)" }
-        return name
+        return name + "  (\(c[0]) of \(c[1]) done)"          // every folder, even ones not started (0 of n)
     }
 
     private func consume(_ d: Data) {

@@ -2779,8 +2779,35 @@ def update_ytdlp():
     emit("info", message="yt-dlp updated" if r.returncode == 0 else "yt-dlp update failed: " + r.stderr[-200:])
 
 
+def be_polite():
+    """Keep the computer usable while DJ Grab works. DJGRAB_SPEED (Settings > While working):
+      balanced (default): lower priority and half the processor cores, so other apps stay smooth
+      background: lowest priority (macOS runs it on the efficiency cores), slowest but barely noticeable
+      full: as fast as possible"""
+    speed = os.environ.get("DJGRAB_SPEED", "balanced")
+    if speed == "full":
+        return speed
+    n = max(2, (os.cpu_count() or 4) // 2) if speed == "balanced" else 2
+    for v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS",
+              "OPENBLAS_NUM_THREADS"):
+        os.environ[v] = str(n)              # read when the audio / AI libraries start
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            cls = 0x00000040 if speed == "background" else 0x00004000   # IDLE / BELOW_NORMAL priority
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), cls)
+        else:
+            os.nice(19 if speed == "background" else 10)
+            if speed == "background" and sys.platform == "darwin":
+                os.setpriority(4, 0, 0x1000)    # PRIO_DARWIN_PROCESS, PRIO_DARWIN_BG: efficiency cores, low disk priority
+    except Exception:
+        pass
+    return speed
+
+
 def main():
     global JSON_MODE, FFMPEG, FFPROBE
+    be_polite()
     ap = argparse.ArgumentParser(description="Download the best audio from a link as a tagged MP3 320.")
     ap.add_argument("urls", nargs="*")
     ap.add_argument("--out", default="/Volumes/Vinny's USB/Vinny's USB/00 DJ GRAB NEW")

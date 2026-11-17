@@ -77,6 +77,10 @@ def load(model_dir):
     return _MODEL
 
 
+import os, time
+GAP = {"full": 0.0, "background": 0.25}.get(os.environ.get("DJGRAB_SPEED", "balanced"), 0.05)
+
+
 def vocals(audio, model_dir):
     """audio: float32 (n, 2) at 44.1 kHz -> vocals estimate (n, 2). Instrumental = audio - vocals."""
     import torch
@@ -113,6 +117,8 @@ def vocals(audio, model_dir):
                 y = y[0]
             out[:, s:s + CHUNK] += y * win
             cnt[s:s + CHUNK] += win
+            if GAP:
+                time.sleep(GAP)        # gives the screen and other apps a turn on the graphics chip
     out = out / cnt.clamp(min=1e-8)
     v = out.numpy().T[:n]
     if audio.shape[1] == 1:

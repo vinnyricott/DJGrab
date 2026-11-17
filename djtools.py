@@ -16,6 +16,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import djgrab  # noqa: E402  (shared helpers: crates, Serato check, ffmpeg)
+if __name__ == "__main__":
+    djgrab.be_polite()            # before numpy and the AI libraries load, so the thread limit takes
 
 STATE = djgrab.APP_SUPPORT / "intros_state.json"
 SR = 44100

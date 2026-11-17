@@ -41,7 +41,7 @@ def shown(v):
 
 DEFAULTS = {"output": str(Path.home() / "Music" / "DJ Grab"), "djApp": "serato", "sortMode": "off",
             "minQuality": 128, "normalizeLUFS": -10.0, "makeIntros": False, "autoUpdate": True,
-            "hookTease": "fits", "outroVersions": False, "introBars": 0, "welcomed": False, "preventSleep": True}
+            "hookTease": "fits", "outroVersions": False, "introBars": 0, "welcomed": False, "preventSleep": True, "workSpeed": "balanced"}
 
 
 class Settings(dict):
@@ -75,7 +75,7 @@ DJ_NOTES = {
 
 def engine_env():
     e = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
-             DJGRAB_DJAPP=S["djApp"], DJGRAB_HOOK=S["hookTease"], DJGRAB_OUTRO="1" if S["outroVersions"] else "0",
+             DJGRAB_DJAPP=S["djApp"], DJGRAB_HOOK=S["hookTease"], DJGRAB_OUTRO="1" if S["outroVersions"] else "0", DJGRAB_SPEED=S.get("workSpeed", "balanced"),
              DJGRAB_OUTPUT=S["output"], DJGRAB_PLAIN="1")
     e["PATH"] = str(HOME / "bin") + os.pathsep + e.get("PATH", "")
     return e
@@ -245,6 +245,12 @@ class SetupDialog(QDialog):
         self.upd = QCheckBox("Install updates automatically"); self.upd.setChecked(S["autoUpdate"]); f.addRow(self.upd)
         self.awake = QCheckBox("Keep the computer awake while working (the screen can still turn off)")
         self.awake.setChecked(S["preventSleep"]); f.addRow(self.awake)
+        self.speed = QComboBox()
+        for k, n in (("balanced", "Balanced (keep using the PC while it runs)"), ("background", "Background (slowest, barely noticeable)"),
+                     ("full", "Full speed (other apps may lag)")):
+            self.speed.addItem(n, k)
+        self.speed.setCurrentIndex(["balanced", "background", "full"].index(S.get("workSpeed", "balanced")))
+        f.addRow("Speed", self.speed)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
         bb.button(QDialogButtonBox.Ok).setText("Get Started" if first else "Save")
         bb.accepted.connect(self.save); f.addRow(bb)
@@ -259,7 +265,7 @@ class SetupDialog(QDialog):
                  minQuality=self.q.currentData(), normalizeLUFS=self.norm.currentData(),
                  makeIntros=self.intros.isChecked(), hookTease=self.hook.currentData(),
                  outroVersions=self.outro.isChecked(), autoUpdate=self.upd.isChecked(),
-                 preventSleep=self.awake.isChecked(), welcomed=True)
+                 preventSleep=self.awake.isChecked(), workSpeed=self.speed.currentData(), welcomed=True)
         S.save()
         Path(S["output"]).mkdir(parents=True, exist_ok=True)
         self.accept()
