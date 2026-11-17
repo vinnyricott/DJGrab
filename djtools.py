@@ -3692,6 +3692,36 @@ def auto_bars(path):
     return 8          # every intro is 8 bars (32 beats); loop it in the DJ software when a longer one is needed
 
 
+TIMING = LOG.parent / "timing.jsonl"
+
+
+def save_timing(path, T, mins, bpm, result, make_intro):
+    """One line per song: how long each step took, so the slow steps can be found and sped up."""
+    try:
+        note = str(result.get("note", ""))
+        rec = {
+            "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "song": Path(path).name,
+            "folder": "/".join(Path(path).parts[-3:-1]),
+            "song_min": round(float(mins), 2),
+            "bpm": round(float(bpm), 2) if bpm else None,
+            "total_s": round(sum(v for k, v in T.items() if not k.startswith("_")), 1),
+            "steps_s": {k: round(v, 1) for k, v in T.items() if not k.startswith("_")},
+            "intro_wanted": bool(make_intro),
+            "intro_made": bool(result.get("intro")),
+            "built_twice": "building another" in note or bool(T.get("_rebuilt")),
+            "repaired": "repaired" in note or "repaired" in str(result.get("style", "")),
+            "no_intro_reason": note if note.startswith(("Couldn't", "No intro", "Opens on")) else "",
+            "devices": {"separation": DEVICES.get("demucs"), "beats": DEVICES.get("beats"),
+                        "studio_stems": DEVICES.get("roformer")},
+            "engine": ENGINE,
+        }
+        with open(TIMING, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        log_exc("timing record")
+
+
 def process(path, bars, make_intro=True):
     from mutagen.id3 import ID3, TIT2, GEOB, COMM, TXXX
     path = Path(path)
@@ -3934,6 +3964,7 @@ def process(path, bars, make_intro=True):
                     # built again another way (the next-best version from another stretch of the song); the
                     # version with fewer problems is kept, and if it still isn't clean there's no intro
                     log(f"{path.name}: intro check found {', '.join(flags)}, building another")
+                    T["_rebuilt"] = 1
                     try:
                         REDO_TRIED.add(REDO_PICK or "")
                         a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid={int(str(REDO_PICK).split(':')[0])} if REDO_PICK and str(REDO_PICK).split(':')[0].isdigit() else set()), bars)
@@ -4053,6 +4084,7 @@ def process(path, bars, make_intro=True):
         log("timing: " + ", ".join(f"{k} {v:.1f}s" for k, v in T.items() if not k.startswith("_")) +
             f" | devices: separation {DEVICES.get('demucs', '?')}, beats {DEVICES.get('beats', '?')}, "
             f"studio stems {DEVICES.get('roformer', '-')}")
+        save_timing(path, T, mins, bpm, result, make_intro)
         try:
             tr = set_trim(path, orig, bpm)
             log(f"{path.name}: " + (f"trim +{tr:.1f} dB (loudest peak to -{TRIM_HEADROOM} dB)" if tr is not None
