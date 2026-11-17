@@ -3936,7 +3936,8 @@ def process(path, bars, make_intro=True):
             # after the loop versions were turned down
             drm_ = info.get("drm")
             light = drm_ is not None and float(np.percentile(drm_, 90)) < 0.02
-            use_claps = CLAP_NEXT or (times.get("_intro_beat", 1.0) < 0.4 and light)
+            use_claps = False          # clap builds are off: they didn't sound good (kept in the code, never used)
+            CLAP_NEXT = False
             try:
                 if use_claps:
                     CLAP_NEXT = False
