@@ -477,8 +477,16 @@ class IntrosTab(QWidget):
 
 # ------------------------------------------------------------------ window
 class Window(QMainWindow):
+    # worker threads talk to the window through signals (a timer started on another thread never fires)
+    latest_found = Signal()
+    update_msg = Signal(str)
+    quit_now = Signal()
+
     def __init__(self):
         super().__init__()
+        self.latest_found.connect(self.show_update)
+        self.update_msg.connect(lambda m: self.update_l.setText(m))
+        self.quit_now.connect(QApplication.quit)
         self.setWindowTitle("DJ Grab")
         self.resize(760, 640)
         ico = ENGINE / "win" / "DJGrab.ico"
@@ -509,7 +517,7 @@ class Window(QMainWindow):
                     self.latest = int(r.read().decode().strip())
             except Exception:
                 return
-            QTimer.singleShot(0, self.show_update)
+            self.latest_found.emit()
         threading.Thread(target=work, daemon=True).start()
 
     def show_update(self):
@@ -543,10 +551,9 @@ class Window(QMainWindow):
                         shutil.copytree(old / f, ENGINE / f)
                 subprocess.Popen([str(PY.with_name("pythonw.exe")), str(ENGINE / "win" / "DJGrab.pyw")],
                                  creationflags=NO_WINDOW)
-                QTimer.singleShot(0, QApplication.quit)
+                self.quit_now.emit()
             except Exception as ex:
-                msg = str(ex)
-                QTimer.singleShot(0, lambda: self.update_l.setText(f"Update failed: {msg}"))
+                self.update_msg.emit(f"Update failed: {ex}")
         threading.Thread(target=work, daemon=True).start()
 
 
