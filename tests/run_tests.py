@@ -104,6 +104,23 @@ def run():
         cl[i:i + 3000] += np.hanning(6000)[3000:, None].astype("float32") * 0.5
     check("gate: clashing drums caught", "drums clash" in d.quality_gate(cl, gb, off, 120.0, s))
 
+    # mid-intro jump: bars 5-8 a third of a beat late get caught, then slid back onto the beat
+    beat_ = 0.5; nbs = int(2.0 * SR); sl = int(0.17 * SR)
+    jm = a.copy()
+    gb_i = int(round(float(gb[4]) * SR))
+    jm[gb_i:o] = a[gb_i - sl:o - sl]
+    check("gate: beat jump inside the intro caught", "beat jumps" in d.quality_gate(jm, gb, off, 120.0, s))
+    rp, what, mv = d.repair_intro(jm, gb, off, 120.0)
+    check("intro jump repaired", bool(what) and "beat jumps" not in d.quality_gate(rp, gb, off, 120.0, s), str(what))
+    check("clean intro left untouched by repair", not d.repair_intro(a, gb, off, 120.0)[1])
+    late = np.concatenate([a[:o], np.zeros((int(0.12 * SR), 2), "float32"), a[o:]])
+    rp, what, mv = d.repair_intro(late, gb, off, 120.0)
+    check("song coming in late slid onto the intro's beat", mv > 0.1 and "beat jumps" not in d.quality_gate(rp, gb, off, 120.0, s), str(what))
+    hole = a.copy(); hb = int(round((float(gb[3]) + 0.5 - 0.02) * SR))
+    hole[hb:hb + int(0.5 * SR)] = 0
+    rp, what, mv = d.repair_intro(hole, gb, off, 120.0)
+    check("a beat missing from the intro filled back in", any("missing hit" in w for w in what), str(what))
+
     # handover lock: a song whose beat comes in late gets moved onto the beat
     orig, stems, bars, info = song(late_from=4)
     a, gb, style, cue, off = d.build_intro_bars(orig, stems, bars, dict(info), 8)

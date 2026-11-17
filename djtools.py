@@ -3311,7 +3311,7 @@ def check_intro(audio, ibars, offset, bpm, song=None):
     return flags
 
 
-def bar_jumps(audio, starts, beat):
+def bar_jumps(audio, starts, beat, detail=False):
     """Where the beat jumps from one bar to the next: a bar whose hits sit clearly on one spot against the
     grid, followed by a bar whose hits sit clearly somewhere else (a loop seam or handover out of time).
     Two measures have to agree: the grid position of each bar's hits, and how the two bars line up with each
@@ -3353,7 +3353,159 @@ def bar_jumps(audio, starts, beat):
                 if stays and abs(lag) > 0.05 and c[j] >= 0.15 and c[j] > 1.5 * max(c[L], 0.0) and abs(circ(d - lag)) < 0.06:
                     out.append(k)
         prev = k
-    return out
+    return (out, pos) if detail else out
+
+
+def _onsets5(audio):
+    x = audio.mean(axis=1) if audio.ndim == 2 else audio
+    hp = int(0.005 * SR)
+    e = np.sqrt(np.convolve(np.asarray(x, "float32") ** 2, np.ones(hp, "float32") / hp, "same"))[::hp]
+    return np.maximum(0.0, np.diff(e, prepend=e[0]))
+
+
+def _song_moved(song, moved):
+    """The original song lined up with an intro file whose song part was slid by repair_intro."""
+    if not moved or song is None:
+        return song
+    n = int(round(abs(moved) * SR))
+    return song[n:] if moved > 0 else np.concatenate([np.zeros((n,) + song.shape[1:], song.dtype), song])
+
+
+def repair_intro(audio, ibars, offset, bpm):
+    """Fix an intro instead of throwing it away:
+      beat jumps: each stretch of the intro whose hits sit off the song's beat is slid back onto it (the bars
+        repeat, so what slides past one end comes back in from the other end of the same bar)
+      missing hits: a beat whose hit is missing from one intro bar, while the other intro bars all have it,
+        gets that hit back from the nearest bar that has it (the last bar is left alone: it can be the song's
+        own pickup)
+      the song coming in off the intro's beat: the song is slid onto it (see below)
+    Returns (audio, what was fixed, how far the song moved in s). The result is checked again like any other intro."""
+    beat = 60.0 / bpm; bar = 4 * beat
+    ib = [float(t) for t in ibars if float(t) < offset - beat]
+    if len(ib) < 2:
+        return audio, [], 0.0
+    starts = ib + [offset + k * bar for k in range(3)]
+    jumps, pos = bar_jumps(audio, starts, beat, detail=True)
+    a = np.array(audio, dtype="float32", copy=True)
+    fixed = []
+    nI = len(ib)
+    circ = lambda d: (d + beat / 2) % beat - beat / 2
+    xf = int(0.004 * SR)
+    ref = None
+
+    def put(i0, i1, new):
+        """Write new over a[i0:i1] with short crossfades at both ends."""
+        old = a[i0:i1].copy()
+        a[i0:i1] = new
+        for lo, w in ((0, np.linspace(0, 1, xf, dtype="float32")), (len(new) - xf, np.linspace(1, 0, xf, dtype="float32"))):
+            if 0 <= lo and lo + xf <= len(new) and not (lo == 0 and i0 == 0):
+                ww = w[:, None] if a.ndim == 2 else w
+                a[i0 + lo:i0 + lo + xf] = new[lo:lo + xf] * ww + old[lo:lo + xf] * (1 - ww)
+
+    if jumps:
+        # the intro's first stretch sets the beat: its first hit was already placed on the attack, so the
+        # later stretches are slid onto it. A jump only where the song comes in means the song's beat grid is
+        # off: that isn't fixed here (sliding the intro would cut its first hit)
+        cuts = [0] + [k for k in jumps if 0 < k < nI] + [nI]
+        ps0 = [pos[k][0] for k in range(0, min(cuts[1], len(pos))) if pos[k][1] >= 3]
+        ref = float(np.median(ps0)) if ps0 else None
+        if ref is not None and len(cuts) > 2:
+            for r0, r1 in list(zip(cuts[:-1], cuts[1:]))[1:]:
+                ps = [pos[k][0] for k in range(r0, min(r1, len(pos))) if pos[k][1] >= 3]
+                if not ps:
+                    continue
+                d = circ(float(np.median(ps)) - ref)
+                if abs(d) < 0.02:
+                    continue
+                t0 = 0.0 if r0 == 0 else starts[r0]
+                t1 = offset if r1 >= nI else starts[r1]
+                i0, i1 = int(round(t0 * SR)), int(round(t1 * SR))
+                nb_ = int(round(bar * SR))
+                src = np.arange(i0, i1) + int(round(d * SR))
+                src = np.where(src < i0, src + nb_, src)
+                src = np.where(src >= i1, src - nb_, src)
+                src = np.clip(src, 0, len(audio) - 1)
+                put(i0, i1, np.asarray(audio, "float32")[src])
+                fixed.append(f"bars {r0 + 1}-{r1} moved {-d * 1000:+.0f} ms onto the beat")
+
+    # the song comes in off the intro's beat (its beat grid is off where it starts): the song is slid so its
+    # hits land on the intro's beat. Song a little late: the quiet lead-in before its first hit is trimmed.
+    # Song early: the intro's beat runs on for that moment before the song comes in. Only when the song's
+    # first bars all agree on where their beat is.
+    moved = 0.0
+    if nI in jumps and ref is None:
+        ps0 = [pos[k][0] for k in range(nI) if pos[k][1] >= 3]
+        ref = float(np.median(ps0)) if ps0 else None
+    if nI in jumps and ref is not None:
+        sp = [pos[k] for k in range(nI, len(pos))]
+        if len(sp) >= 2 and all(r >= 3 for _, r in sp[:2]) and abs(circ(sp[1][0] - sp[0][0])) < 0.03:
+            d = circ(float(np.median([p for p, _ in sp[:3]])) - ref)
+            # exact amount: line the song's first bar up against the intro's last full bar
+            o_ = _onsets5(a); h_ = 0.005; n_ = int(round(bar / h_)); L_ = int(beat / 2 / h_)
+            kb = max(k for k in range(nI) if pos[k][1] >= 3) if any(pos[k][1] >= 3 for k in range(nI)) else nI - 1
+            x0 = o_[int(round(ib[kb] / h_)):int(round(ib[kb] / h_)) + n_]
+            x1 = o_[int(round(offset / h_)):int(round(offset / h_)) + n_ + L_]
+            if len(x0) == n_ and len(x1) == n_ + L_:
+                lags = [l for l in range(-L_, L_ + 1) if 0 <= l and l + n_ <= len(x1)] or [0]
+                sc_ = [float(np.dot(x0 - x0.mean(), x1[l:l + n_] - x1[l:l + n_].mean())) for l in lags]
+                lg = lags[int(np.argmax(sc_))] * h_
+                if abs(lg - d) < 0.06:
+                    d = lg
+            io, nd = int(round(offset * SR)), int(round(abs(d) * SR))
+            nb_ = int(round(bar * SR))
+            if d > 0.02:
+                lead = float(np.sqrt(np.mean(a[io:io + max(1, nd - int(0.015 * SR))] ** 2)) + 1e-9)   # up to just before the hit
+                body = float(np.sqrt(np.mean(a[io:io + nb_] ** 2)) + 1e-9)
+                if lead < 0.25 * body:
+                    a = np.concatenate([a[:io], a[io + nd:]])
+                    moved = d
+            elif d < -0.02 and io - nb_ >= 0:
+                fill = a[io - nb_:io - nb_ + nd].copy()        # the start of a bar of the intro, carried on
+                f_ = min(int(0.004 * SR), nd // 2)
+                if f_ > 0:
+                    w = np.linspace(1, 0, f_, dtype="float32")
+                    fill[-f_:] *= w[:, None] if a.ndim == 2 else w
+                a = np.concatenate([a[:io], fill, a[io:]])
+                moved = d
+            if moved:
+                fixed.append(f"song brought in {abs(moved) * 1000:.0f} ms {'sooner' if moved > 0 else 'later'} to land on the intro's beat")
+
+    # missing hits inside the intro
+    o = _onsets5(a)
+    conf = [p for p, r in pos[:nI] if r >= 3]
+    ph = float(np.median(conf)) if conf else 0.0
+    if fixed and ref is not None:
+        ph = ref
+    def hit(t):
+        i = int(round(t / 0.005))
+        return float(o[max(0, i - 5):i + 6].max()) if 0 <= i < len(o) else 0.0
+    H = np.array([[hit(ib[j] + b * beat + ph) for b in range(4)] for j in range(nI)])
+    if H.size and H.max() > 0:
+        for b in range(4):
+            col = H[:, b]
+            for j in range(1, nI - 1):
+                others = np.delete(col, j)
+                m = float(np.median(others))
+                if m < 0.3 * H.max() or col[j] >= 0.15 * m or (others < 0.5 * m).sum() > 1:
+                    continue
+                good = [g for g in sorted(range(nI), key=lambda g: abs(g - j)) if g != j and col[g] >= 0.6 * m]
+                if not good:
+                    continue
+                g = good[0]
+                ts, tg = ib[j] + b * beat + ph - 0.015, ib[g] + b * beat + ph - 0.015
+                n_ = int(round(beat * SR))
+                i0, ig = int(round(ts * SR)), int(round(tg * SR))
+                if i0 < 0 or ig < 0 or i0 + n_ > int(offset * SR) or ig + n_ > len(a):
+                    continue
+                # only a real hole: the whole beat goes quiet, not a hit the pattern leaves out on purpose
+                rms = lambda i: float(np.sqrt(np.mean(a[i:i + n_] ** 2)) + 1e-9)
+                if rms(i0) > 0.35 * rms(ig):
+                    continue
+                if any(0 <= b2 < 4 and H[j, b2] < 0.6 * float(np.median(np.delete(H[:, b2], j))) for b2 in (b - 1, b + 1)):
+                    continue                              # more than one beat gone: a planned stop, left alone
+                put(i0, i0 + n_, a[ig:ig + n_].copy())
+                fixed.append(f"missing hit on bar {j + 1} beat {b + 1} filled")
+    return (a if fixed else audio), fixed, moved
 
 
 SERIOUS = ("cut-off start", "beat jumps", "drums clash")
@@ -3755,6 +3907,16 @@ def process(path, bars, make_intro=True):
                 s0_ = info.get("song_from", info["sb"])
                 orig_song = orig[int(round(float(bars_t[s0_]) * SR)):]
                 flags = check_intro(audio, ibars, offset, float(bpm), orig_song)
+                try:                                  # fix jumps and missing hits first, then check again
+                    fixed_a, fixed_what, mv = repair_intro(audio, ibars, offset, float(bpm))
+                    if fixed_what:
+                        ff = check_intro(fixed_a, ibars, offset, float(bpm), _song_moved(orig_song, mv))
+                        if sum(f in SERIOUS for f in ff) <= sum(f in SERIOUS for f in flags):
+                            log(f"{path.name}: intro repaired ({'; '.join(fixed_what)})" + (f", check now: {', '.join(ff)}" if ff else ""))
+                            audio, flags = fixed_a, ff
+                            style += " · repaired: " + "; ".join(fixed_what)
+                except Exception:
+                    log_exc("intro repair")
                 if any(f in SERIOUS for f in flags) and not use_claps:
                     # built again another way (the next-best version from another stretch of the song); the
                     # version with fewer problems is kept, and if it still isn't clean there's no intro
@@ -3763,6 +3925,14 @@ def process(path, bars, make_intro=True):
                         REDO_TRIED.add(REDO_PICK or "")
                         a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid={int(str(REDO_PICK).split(':')[0])} if REDO_PICK and str(REDO_PICK).split(':')[0].isdigit() else set()), bars)
                         f2 = check_intro(a2[0], a2[1], a2[4], float(bpm), orig_song)
+                        try:
+                            ra, rw, mv2 = repair_intro(a2[0], a2[1], a2[4], float(bpm))
+                            if rw:
+                                rf = check_intro(ra, a2[1], a2[4], float(bpm), _song_moved(orig_song, mv2))
+                                if sum(f in SERIOUS for f in rf) <= sum(f in SERIOUS for f in f2):
+                                    a2 = (ra, a2[1], a2[2] + " · repaired: " + "; ".join(rw), a2[3], a2[4]); f2 = rf
+                        except Exception:
+                            log_exc("intro repair")
                         if sum(f in SERIOUS for f in f2) < sum(f in SERIOUS for f in flags):
                             audio, ibars, style, half_cue, offset = a2
                             flags = f2
