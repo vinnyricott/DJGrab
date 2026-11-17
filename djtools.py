@@ -24,7 +24,7 @@ SR = 44100
 OUR_CUES = [("Start", 0x00CC00), ("Drop", 0xCC0000), ("Breakdown", 0xCCCC00), ("Outro", 0x8800CC)]
 LAST_SLOT = 7            # Serato's 8th cue stays empty for the DJ
 CUE_LABEL = {"Drop": "Chorus", "Drop 2": "Chorus 2"}
-OUR_NAMES = {"Chorus", "Chorus 2", "Build"} | {n for n, _ in OUR_CUES} | {f"Bar {k}" for k in range(1, 1000, 8)} | {"Halfway", "Vocals", "Intro", "Beat In", "Melody In", "Filter Open", "Hook", "Song Start"}
+OUR_NAMES = {"Chorus", "Chorus 2", "Build"} | {n for n, _ in OUR_CUES} | {f"Bar {k}" for k in range(1, 1000, 8)} | {"Halfway", "Vocals", "Intro", "Beat In", "Melody In", "Filter Open", "Hook", "Song Start", "Song", "Drop 2"}
 SKIP_WORDS = re.compile(r"\b(intro|acap+ella|acapela|instrumental|inst|clean intro|dirty intro|edit intro|"
                         r"extended|outro|transition|effect|sfx|scratch)\b", re.I)
 SKIP_FOLDERS = ("Tools", "Other", "00 DJ GRAB NEW", "Mixes")
@@ -825,8 +825,11 @@ def audio_key(audio):
     return hashlib.sha1(x + str(len(audio)).encode()).hexdigest()[:20]
 
 
+FRESH = os.environ.get("DJGRAB_FRESH") == "1"     # "Redo intro": separate the song again, nothing from the cache
+
+
 def cache_get(name):
-    if CACHE is None:
+    if CACHE is None or FRESH:
         return None
     f = CACHE / "songs" / (name + ".npz")
     try:
@@ -1003,7 +1006,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 11              # handover moves limited to 30 ms; an intro that fails the check twice isn't kept
+INTRO_RULE = 12              # intro versions: Start, Halfway, Song (where the song comes in), then the song's cues
 
 
 def _is_dance(p):
@@ -1020,6 +1023,7 @@ RULE_CHANGES = {
     9: lambda p, kind: kind == "intro",                      # every intro 8 bars; bar lines on the hit's attack
     10: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # grids wrongly moved half a beat: put back
     11: lambda p, kind: Path(p).name in HALF_BEAT_MOVED,     # song start moved too far / intro wrongly left out
+    12: lambda p, kind: kind == "intro",                     # intro versions get a Song cue
 }
 HALF_BEAT_MOVED = {"DJ Deeon - Let Me Bang.mp3", "Get Busy With It - Conducta.mp3", "SECRETS NOTION w Cameron Hayes.mp3",
                    "Turn On The Lights - Fred Again.mp3",
@@ -3620,8 +3624,10 @@ def process(path, bars, make_intro=True):
             print("DEBUG cue", "bars", [round(float(v), 3) for v in bars_t[:4]], "sb0", sb0, "first_note", first_note)
         head_ = [("Start", first_note * 1000, 0x00CC00)]
         hv = intro_halfway(path, bars_t, sb0, times)
-        if hv is not None:                       # an intro version (ours or a pool's): Halfway through its intro
-            head_.append(("Halfway", hv * 1000, 0x00CCCC))
+        if hv is not None:                       # an intro version (ours or a pool's): Halfway through its intro,
+            head_.append(("Halfway", hv * 1000, 0x00CCCC))     # then Song where the song itself comes in
+            vb_ = int(np.argmin(np.abs(np.asarray(bars_t) - times["Vocals"])))
+            head_.append(("Song", float(bars_t[vb_]) * 1000, 0x0088FF))
         cues = pads(head_ +
                     phrase_cues(bars_t, sb0, times, [c for c in OUR_CUES if c[0] != "Start"],
                                 [("Start", float(bars_t[sb0]) * 1000, 0)] + head_[1:]))
@@ -3748,7 +3754,8 @@ def process(path, bars, make_intro=True):
                         imarkers = [(float(all_bars[j]), 8, None) for j in range(0, len(all_bars) - 2, 2)]
                         imarkers.append((float(all_bars[len(imarkers) * 2]), None, float(bpm)))
                     # the intro's first bar, halfway to the song, the song's start, then every 8 bars of the song
-                    head = [("Start", float(all_bars[0]) * 1000, 0x00CC00), ("Halfway", float(all_bars[bars // 2]) * 1000, 0x00CCCC)]
+                    head = [("Start", float(all_bars[0]) * 1000, 0x00CC00), ("Halfway", float(all_bars[bars // 2]) * 1000, 0x00CCCC),
+                            ("Song", float(all_bars[min(bars, len(all_bars) - 1)]) * 1000, 0x0088FF)]   # where the song comes in
                     st_ = {n: v + shift for n, v in times.items() if isinstance(v, float) and v > float(bars_t[sb]) + 0.5 * bar}
                     ph0 = bars                                     # 8-bar cycle counted from Song Start
                     rest = phrase_cues(all_bars, min(ph0, len(all_bars) - 1), st_, [c for c in OUR_CUES if c[0] != "Start"], head)
