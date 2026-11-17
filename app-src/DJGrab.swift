@@ -1894,7 +1894,7 @@ struct SettingsView: View {
                     Picker("Intro length", selection: $introBars) {
                         Text("Auto (suggested)").tag(0); Text("4 bars").tag(4); Text("8 bars").tag(8); Text("16 bars").tag(16)
                     }
-                    Text("Auto picks by genre, like DJ pools: 16 bars for house and dance music, 8 bars for everything else. Choose a length to use it for every song instead.")
+                    Text("Auto: 8 bars (32 beats) for every song; loop it in your DJ software if you need it longer. Choose a length to use it for every song instead.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

@@ -993,7 +993,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 7               # intros: clean start on beat 1, half-beat grid check, handover locked to the song's beat
+INTRO_RULE = 9               # intros: 8 bars for every song, bar lines on the hit's attack, quality gate
 
 
 def _is_dance(p):
@@ -1006,6 +1006,8 @@ def _is_dance(p):
 RULE_CHANGES = {
     6: lambda p, kind: kind == "intro" and _is_dance(p),     # house / dance: many intros no longer needed
     7: lambda p, kind: kind == "intro",                      # every intro DJ Grab made: start / handover timing
+    8: lambda p, kind: kind == "intro",                      # clean start on the attack, no drum fills that clash
+    9: lambda p, kind: kind == "intro",                      # every intro 8 bars; bar lines on the hit's attack
 }
 
 
@@ -1718,13 +1720,16 @@ def analyse_bars(stems, bars, n_samples, official=None):
 
 def _xjoin(parts, ms=4):
     """Join audio pieces cut on bar lines with a tiny crossfade so the cuts can't click."""
+    # the outgoing bar fades over its last few ms; the incoming bar only gets a 0.3 ms ramp, so the hit on
+    # the 1 keeps its full attack (a 4 ms fade-in there softened every downbeat and sounded cut off)
     k = int(ms / 1000 * SR)
+    k_in = max(1, int(0.0003 * SR))
     out = parts[0].copy()
     for p in parts[1:]:
         p = p.copy()
         if len(out) > k and len(p) > k:
             out[-k:] *= np.linspace(1, 0, k, dtype="float32")[:, None]
-            p[:k] *= np.linspace(0, 1, k, dtype="float32")[:, None]
+            p[:k_in] *= np.linspace(0, 1, k_in, dtype="float32")[:, None]
         out = np.concatenate([out, p])
     return out
 
@@ -1880,7 +1885,7 @@ def _roll(bar, drum_bar):
     return out
 
 
-def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0):
+def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0, dance=False):
     """Per-bar layering for an intro (dbars / ibars: the drum stem and instrumental for each source bar).
     Built the way DJ-pool intros are (measured on 18 pool intros against their originals): the beat with
     its full low end (kick and bass) from the first bar, the music held back in the mids and opening up
@@ -1906,6 +1911,10 @@ def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0):
                 bar = d + bass + music * (0.8 + 0.2 * frac)
             else:
                 bar = d + nd
+            if dance and frac < 1:
+                # house / dance intros are the drums and the bassline: the separated melody (where separation
+                # leaves its watery artifacts) only comes in, filtered, over the last two bars
+                bar = d + bass + (music * max(0.0, (frac - (n - 3) / max(1, n - 1)) * (n - 1) / 2) if n > 2 else 0)
             if i < bass_from:          # 16-bar intros: the bass line waits for Halfway (the kick keeps its low end)
                 bar = bar - bass
         out.append(bar.astype("float32"))
@@ -2143,7 +2152,10 @@ def _fill_gaps(intro, song, parts, lens):
             while j < len(quiet) and quiet[j]:
                 j += 1
             a, b = i * w, j * w
-            if b - a >= int(0.12 * SR) and a > 0:                # a real gap, not the song's very first moment
+            # a short real gap (a breath, a stop of under one beat), not the song's very first moment. Longer
+            # stops are part of the song (a break before the drop) and are left alone: a beat played into
+            # them sounds like two drummers out of time
+            if int(0.12 * SR) <= b - a <= bar // 4 and a > 0:
                 pos = np.arange(a, b) % len(src)
                 fill = src[pos] * 10 ** (-4 / 20)
                 f = min(int(0.02 * SR), (b - a) // 4)
@@ -2219,7 +2231,17 @@ def _snap_bars(orig, bars):
                 continue
             j = lo + int(np.argmax(on[lo:hi]))
             if on[j] > 6 * ref:
-                out[i] = max(0.0, j * 0.004 - 0.004)       # start just before the hit
+                # down to the sample: the first moment the hit rises out of what was before it, then 2 ms earlier
+                a_, b_ = max(0, (j - 4) * hop), min(len(m), (j + 2) * hop)
+                x = np.abs(m[a_:b_])
+                if len(x):
+                    pk = float(x.max())
+                    base = float(np.percentile(np.abs(m[max(0, a_ - 4 * hop):a_ + 1]), 90)) if a_ > 0 else 0.0
+                    k = np.nonzero(x > max(0.2 * pk, 2.0 * base))[0]
+                    onset = (a_ + int(k[0])) if len(k) else j * hop
+                    out[i] = max(0.0, onset / SR - 0.002)
+                else:
+                    out[i] = max(0.0, j * 0.004 - 0.004)
         return out
     except Exception:
         return np.asarray(bars, float)
@@ -2615,7 +2637,8 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         # own beat starts: the intro's drums keep playing under those bars, so the beat never drops out
         L = info["loud"]
         ref = float(np.median(drm[L:L + 8])) + 1e-9
-        own2 = next((j for j in range(sb, min(sb + 5, nb)) if drm[j] >= 0.4 * ref), None)
+        # only bars with really no drums (a lighter beat of the song's own would clash: two snares at once)
+        own2 = next((j for j in range(sb, min(sb + 5, nb)) if drm[j] >= 0.15 * ref), None)
         if own2 is not None and own2 > sb:
             carry = max(carry, own2 - sb)
             info["_dropout_fill"] = own2 - sb
@@ -2684,7 +2707,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         for name_, loop in options.items():
             parts_ = build_layers(drums, inst, [seg(drums, i, i + 1) for i in loop],
                                   [seg(inst, i, i + 1) for i in loop], mode, tension,
-                                  bass_from=8 if n_bars >= 16 else 0)
+                                  bass_from=8 if n_bars >= 16 else 0, dance=bool(info.get("dance")))
             if mode != "soft":
                 parts_ = [_tilt(p_) for p_ in parts_]
             cost_, why_ = _intro_cost(parts_, loop, drums, seg, C_all, orig, bt, nb, sb,
@@ -2907,18 +2930,34 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
     song = _fill_gaps(intro, song, parts, lens)
     if getattr(song, "filled", False):
         style += ", silent gap after the song comes in filled with the intro's beat"
-    # beat 1 lands right at the start but never cut: the first hit of a bar often starts a few ms before the
-    # bar line, and cutting exactly on the line clips its attack (it sounds like the song is cut off). So the
-    # intro starts 15 ms early with the audio just before that line, faded in; every bar and cue moves with it
-    lead = int(0.015 * SR)
+    # beat 1 starts clean, like the start of a record: the first hit's attack is found (it can start a few ms
+    # before or after the bar line) and the intro starts 3 ms before it, from silence. Whatever was still
+    # ringing from the bar before (an 808 tail, a held chord) is left out, so nothing sounds cut off or
+    # smeared before the 1. Every bar and cue moves with it
+    pre_n = int(0.030 * SR)
     a0 = int(round(bt[src] * SR))
-    if a0 >= lead:
-        pre = orig[a0 - lead:a0].astype("float32") * (np.linspace(0, 1, lead, dtype="float32")[:, None] ** 2)
+    if len(intro) > int(0.06 * SR) and a0 >= pre_n:
+        pre = orig[a0 - pre_n:a0].astype("float32")
         if pre.shape[1] != intro.shape[1]:
             pre = np.repeat(pre[:, :1], intro.shape[1], axis=1)
-        intro = np.concatenate([pre * 0.5, intro])
-        gen_bars = gen_bars + lead / SR
-        lens = [lens[0] + lead] + list(lens[1:])
+        w = np.concatenate([pre, intro[:int(0.040 * SR)]])
+        m = np.abs(w).max(axis=1)
+        h = int(0.001 * SR)
+        env = np.array([m[k:k + h].max() for k in range(0, len(m) - h, h)])
+        rise = np.diff(env, prepend=env[0])
+        lo_, hi_ = 5, min(len(rise), 60)                       # look 25 ms before to 30 ms after the bar line
+        att = int(np.argmax(rise[lo_:hi_])) + lo_ if hi_ > lo_ else 30
+        if rise[att] > 0.15 * float(env.max() + 1e-9):
+            start = max(0, att * h - int(0.003 * SR))           # 3 ms before the attack
+            lead = pre_n - start                                # > 0: begins in the bar before; < 0: trims
+            if lead > 0:
+                intro = np.concatenate([w[start:pre_n], intro])
+            else:
+                intro = intro[-lead:]
+            f = int(0.002 * SR)
+            intro[:f] *= np.linspace(0, 1, f, dtype="float32")[:, None]
+            gen_bars = gen_bars + lead / SR
+            lens = [lens[0] + lead] + list(lens[1:])
     # no jump into the song: the intro's beat, carried on at its own tempo, has to land on the song's first
     # hits. If the song's hits sit a little early or late against that (a grid line a few ms or half a beat
     # off where the song comes in), the song's start is moved to match, so the beat runs straight through
@@ -3223,7 +3262,7 @@ def watch_grid(path):
         log(f"watch_grid {path}: {ex}")
 
 
-def check_intro(audio, ibars, offset, bpm):
+def check_intro(audio, ibars, offset, bpm, song=None):
     """Self-check every intro before it is kept: the seam into the song shouldn't jump in loudness, and the
     intro's hits must sit on its own grid. Problems are named in the result and the log for review."""
     flags = []
@@ -3240,7 +3279,49 @@ def check_intro(audio, ibars, offset, bpm):
     best = max(np.arange(-0.04, 0.0401, 0.002), key=sc)
     if abs(best) > 0.015 and sc(best) > 1.3 * sc(0.0):
         flags.append(f"hits {best * 1000:+.0f} ms off the grid")
+    flags += quality_gate(audio, ibars, offset, bpm, song)
     return flags
+
+
+SERIOUS = ("cut-off start", "beat jumps", "drums clash")
+
+
+def quality_gate(audio, ibars, offset, bpm, song=None):
+    """The problems a DJ hears right away. An intro with any of them is built again another way, and if that
+    still fails it isn't kept (the song is left as it is):
+      cut-off start: sound before beat 1's own hit, or the hit starting already at full level
+      beat jumps:    the intro's beat, carried on, doesn't land on the song's hits where it comes in
+      drums clash:   hits in the song's first bars that the original song doesn't have, off its beat"""
+    out = []
+    beat = 60.0 / bpm
+    h = int(0.001 * SR)
+    m = np.abs(audio[:int(0.06 * SR)]).max(axis=1)
+    env = np.array([m[k:k + h].max() for k in range(0, len(m) - h, h)])
+    if len(env) > 10:
+        att = int(np.argmax(np.diff(env, prepend=env[0])))
+        if env[:max(1, att - 4)].max() > 0.35 * env.max() or env[0] > 0.5 * env.max():
+            out.append("cut-off start")
+    def onsets(x):
+        mono = x.mean(axis=1) if x.ndim == 2 else x
+        hp = int(0.005 * SR)
+        e = np.sqrt(np.convolve(mono ** 2, np.ones(hp) / hp, "same"))[::hp]
+        return np.maximum(0.0, np.diff(e, prepend=e[0]))
+    o0 = int(offset * SR)
+    if 0 < o0 < len(audio) - int(8 * beat * SR):
+        seg = onsets(audio[o0:o0 + int(8 * beat * SR)])
+        at = lambda t: seg[max(0, int(t / 0.005) - 2):int(t / 0.005) + 3].max() if int(t / 0.005) < len(seg) else 0.0
+        on = np.mean([at(k * beat) for k in range(8)])
+        off = max(np.mean([at(k * beat + d) for k in range(8)]) for d in (0.02, 0.03, -0.02, -0.03))
+        if off > 1.4 * on and off > 0:
+            out.append("beat jumps")
+        if song is not None and len(song) >= int(16 * beat * SR):
+            a = onsets(audio[o0:o0 + int(16 * beat * SR)])
+            b = onsets(np.asarray(song[:int(16 * beat * SR)], dtype="float32"))
+            n = min(len(a), len(b))
+            extra = np.maximum(0.0, a[:n] - 2.0 * b[:n] - 0.02 * float(a[:n].max() + 1e-9))
+            if float(extra.sum()) > 0.25 * float(a[:n].sum() + 1e-9):
+                out.append("drums clash")
+    return out
 
 
 # ------------------------------------------------------------------ tempo fix (songs a hair off a whole BPM)
@@ -3364,7 +3445,7 @@ def auto_bars(path):
     parts = Path(path).parts
     top = parts[-3] if len(parts) >= 3 else ""
     sub = parts[-2] if len(parts) >= 2 else ""
-    return 16 if top in LONG_INTRO_TOPS or sub in LONG_INTRO_SUBS else 8
+    return 8          # every intro is 8 bars (32 beats); loop it in the DJ software when a longer one is needed
 
 
 def process(path, bars, make_intro=True):
@@ -3562,6 +3643,7 @@ def process(path, bars, make_intro=True):
             info["vox_share"] = float(times.get("_vox_share", 0.0))
             info["top"] = path.parent.parent.name
             info["bpm"] = float(bpm)
+            info["dance"] = path.parent.parent.name in LONG_INTRO_TOPS or path.parent.name in LONG_INTRO_SUBS
             if isinstance(times.get("Drop"), float):           # the chorus, for the hook tease
                 info["chorus_bar"] = int(np.argmin(np.abs(np.asarray(bars_t) - times["Drop"])))
             info["layer"] = path.parent.parent.name in LAYER_GENRES or path.parent.name in LAYER_GENRES
@@ -3588,53 +3670,77 @@ def process(path, bars, make_intro=True):
             if audio is not None:
                 mark("intro build")
                 send_eta(["encode intro"], mins)
-                flags = check_intro(audio, ibars, offset, float(bpm))
-                tmp = work / "intro.wav"; save_wav(tmp, audio)
-                # built and tagged on the Mac's fast disk, then copied to the USB once (not rewritten there 3 times)
-                dst = intro_path(path); part = work / "intro.part.mp3"
-                r = subprocess.run([djgrab.FFMPEG, "-y", "-v", "error", "-i", str(tmp), "-c:a", "libmp3lame", "-b:a", "320k",
-                                    "-compression_level", "2", "-id3v2_version", "0", str(part)], capture_output=True, text=True)
-                if r.returncode:
-                    raise RuntimeError("couldn't encode the intro: " + r.stderr[-200:])
-                new = ID3()
-                for k, f in id3.items():
-                    if not k.startswith(("GEOB", "PRIV", "TLEN", "PCNT", "POPM")) and "PLAYCOUNT" not in k.upper() and k != "TXXX:DJ Grab trim":
-                        new.add(f)
-                title = str(id3.get("TIT2", path.stem.partition(" - ")[2] or path.stem))
-                art = str(id3.get("TPE1", "")).strip()
-                if art and title.lower().startswith(art.lower() + " - "):
-                    title = title[len(art) + 3:]               # a title that repeats the artist ("BTS - Dynamite")
-                new.setall("TIT2", [TIT2(encoding=3, text=f"{title} (Intro)")])
-                new.setall("COMM", [COMM(encoding=3, lang="eng", desc="", text=cmt or "")])
-                new.setall("TXXX:DJ Grab intro", [TXXX(encoding=3, desc="DJ Grab intro", text=f"{bars} bars, {style}")])
-                new.save(str(part), v2_version=3)
-                # the intro file's bar lines: the intro's own bars, then the song's bars shifted to follow it
-                sb = info.get("song_from", info["sb"])        # where the song comes in (after any skipped quiet bars)
-                shift = offset - float(bars_t[sb])
-                all_bars = np.concatenate([ibars, bars_t[sb:] + shift])   # the song's pickup bars count in the intro
-                if g["drift"] <= 0.012 and len(g.get("markers") or []) <= 1:
-                    imarkers = [(float(all_bars[0]), None, float(bpm))]
-                else:
-                    imarkers = [(float(all_bars[j]), 8, None) for j in range(0, len(all_bars) - 2, 2)]
-                    imarkers.append((float(all_bars[len(imarkers) * 2]), None, float(bpm)))
-                # the intro's first bar, halfway to the song, the song's start, then every 8 bars of the song
-                head = [("Start", float(all_bars[0]) * 1000, 0x00CC00), ("Halfway", float(all_bars[bars // 2]) * 1000, 0x00CCCC)]
-                st_ = {n: v + shift for n, v in times.items() if isinstance(v, float) and v > float(bars_t[sb]) + 0.5 * bar}
-                ph0 = bars                                     # 8-bar cycle counted from Song Start
-                rest = phrase_cues(all_bars, min(ph0, len(all_bars) - 1), st_, [c for c in OUR_CUES if c[0] != "Start"], head)
-                icues = pads(head + rest)
-                mark("encode intro")
-                result["intro_cues"] = write_cues(str(part), icues, imarkers)
-                _other_app(dst, icues, bpm, 0.0)
-                mark_analysed(part, id3, audio, bpm)
-                usb_tmp = dst.with_name("." + dst.stem + ".part.mp3")
-                shutil.copyfile(part, usb_tmp)
-                os.replace(usb_tmp, dst)
-                mark("intro tags")
-                watch_grid(dst)
-                djgrab.queue_for_crate(dst)
-                result["intro"] = str(dst)
-                result["note"] = "Intro: " + style + (" · check: " + ", ".join(flags) if flags else "")
+                s0_ = info.get("song_from", info["sb"])
+                orig_song = orig[int(round(float(bars_t[s0_]) * SR)):]
+                flags = check_intro(audio, ibars, offset, float(bpm), orig_song)
+                if any(f in SERIOUS for f in flags) and not use_claps:
+                    # built again another way (the next-best version from another stretch of the song)
+                    log(f"{path.name}: intro failed the check ({', '.join(flags)}), building another")
+                    try:
+                        REDO_TRIED.add(REDO_PICK or "")
+                        a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid={int(str(REDO_PICK).split(':')[0])} if REDO_PICK and str(REDO_PICK).split(':')[0].isdigit() else set()), bars)
+                        f2 = check_intro(a2[0], a2[1], a2[4], float(bpm), orig_song)
+                        if not any(f in SERIOUS for f in f2):
+                            audio, ibars, style, half_cue, offset = a2
+                            flags = f2
+                    except Exception:
+                        log_exc("second intro")
+                    finally:
+                        REDO_TRIED.discard(REDO_PICK or "")
+                if any(f in SERIOUS for f in flags):
+                    log(f"{path.name}: no intro kept ({', '.join(flags)})")
+                    result["note"] = "Couldn't make a clean intro (" + ", ".join(f for f in flags if f in SERIOUS) + "): song left as it is"
+                    if intro_path(path).exists() and is_our_intro(intro_path(path)):
+                        retire_intro(intro_path(path))
+                        result["note"] += " · old intro moved to _To Delete"
+                    audio = None
+                if audio is not None:
+                    tmp = work / "intro.wav"; save_wav(tmp, audio)
+                    # built and tagged on the Mac's fast disk, then copied to the USB once (not rewritten there 3 times)
+                    dst = intro_path(path); part = work / "intro.part.mp3"
+                    r = subprocess.run([djgrab.FFMPEG, "-y", "-v", "error", "-i", str(tmp), "-c:a", "libmp3lame", "-b:a", "320k",
+                                        "-compression_level", "2", "-id3v2_version", "0", str(part)], capture_output=True, text=True)
+                    if r.returncode:
+                        raise RuntimeError("couldn't encode the intro: " + r.stderr[-200:])
+                    new = ID3()
+                    for k, f in id3.items():
+                        if not k.startswith(("GEOB", "PRIV", "TLEN", "PCNT", "POPM")) and "PLAYCOUNT" not in k.upper() and k != "TXXX:DJ Grab trim":
+                            new.add(f)
+                    title = str(id3.get("TIT2", path.stem.partition(" - ")[2] or path.stem))
+                    art = str(id3.get("TPE1", "")).strip()
+                    if art and title.lower().startswith(art.lower() + " - "):
+                        title = title[len(art) + 3:]               # a title that repeats the artist ("BTS - Dynamite")
+                    new.setall("TIT2", [TIT2(encoding=3, text=f"{title} (Intro)")])
+                    new.setall("COMM", [COMM(encoding=3, lang="eng", desc="", text=cmt or "")])
+                    new.setall("TXXX:DJ Grab intro", [TXXX(encoding=3, desc="DJ Grab intro", text=f"{bars} bars, {style}")])
+                    new.save(str(part), v2_version=3)
+                    # the intro file's bar lines: the intro's own bars, then the song's bars shifted to follow it
+                    sb = info.get("song_from", info["sb"])        # where the song comes in (after any skipped quiet bars)
+                    shift = offset - float(bars_t[sb])
+                    all_bars = np.concatenate([ibars, bars_t[sb:] + shift])   # the song's pickup bars count in the intro
+                    if g["drift"] <= 0.012 and len(g.get("markers") or []) <= 1:
+                        imarkers = [(float(all_bars[0]), None, float(bpm))]
+                    else:
+                        imarkers = [(float(all_bars[j]), 8, None) for j in range(0, len(all_bars) - 2, 2)]
+                        imarkers.append((float(all_bars[len(imarkers) * 2]), None, float(bpm)))
+                    # the intro's first bar, halfway to the song, the song's start, then every 8 bars of the song
+                    head = [("Start", float(all_bars[0]) * 1000, 0x00CC00), ("Halfway", float(all_bars[bars // 2]) * 1000, 0x00CCCC)]
+                    st_ = {n: v + shift for n, v in times.items() if isinstance(v, float) and v > float(bars_t[sb]) + 0.5 * bar}
+                    ph0 = bars                                     # 8-bar cycle counted from Song Start
+                    rest = phrase_cues(all_bars, min(ph0, len(all_bars) - 1), st_, [c for c in OUR_CUES if c[0] != "Start"], head)
+                    icues = pads(head + rest)
+                    mark("encode intro")
+                    result["intro_cues"] = write_cues(str(part), icues, imarkers)
+                    _other_app(dst, icues, bpm, 0.0)
+                    mark_analysed(part, id3, audio, bpm)
+                    usb_tmp = dst.with_name("." + dst.stem + ".part.mp3")
+                    shutil.copyfile(part, usb_tmp)
+                    os.replace(usb_tmp, dst)
+                    mark("intro tags")
+                    watch_grid(dst)
+                    djgrab.queue_for_crate(dst)
+                    result["intro"] = str(dst)
+                    result["note"] = "Intro: " + style + (" · check: " + ", ".join(flags) if flags else "")
         elif make_intro:
             result["note"] = "Has an intro version"
         if make_intro and MAKE_OUTRO and not outro_path(path).exists():

@@ -174,6 +174,9 @@ def parse_names(info):
     # Normalise bracket style: [Remix] -> (Remix)
     title = re.sub(r"\[([^\[\]]+)\]", r"(\1)", title)
     artist, title, _ = polish(tidy(artist), tidy(title))
+    real = title_from_artists(artist, title)          # uploaded as just "Artist & Artist": find the real title
+    if real:
+        artist, title = title, real
     return tidy(artist) or "Unknown Artist", tidy(title) or "Unknown Title"
 
 
@@ -199,6 +202,30 @@ _TAIL_JUNK = re.compile(r"(?:\s+-\s+(?:\d{4}|pop|rock|hq|hd|audio|lyrics?|offici
 
 def _known(a):
     return primary_artist(a) in artist_genres()
+
+
+def title_from_artists(artist, title):
+    """An upload titled with only the artists' names ("Chris Lorenzo & Kah-Lo"): find the song's real title in
+    the music catalog (the newest track by those artists). Returns the title, or None."""
+    words = lambda x: set(re.findall(r"[a-z0-9]+", x.lower())) - {"feat", "ft", "x", "and", "with", "vs"}
+    tw, aw = words(title or ""), words(artist or "")
+    # the title holds the artist's own name and at most a few more words joined by "&" / "x" / "feat."
+    if not tw or not aw or not aw <= tw or not re.search(r"&|\bx\b|\bfeat|\bft\b|,", title or "", re.I):
+        return None
+    names = [n.strip() for n in re.split(r"\s*(?:&|,|\bx\b|\bfeat\.?|\bft\.?|\band\b)\s*", title, flags=re.I) if n.strip()]
+    if len(names) < 2:
+        return None
+    import urllib.parse
+    try:
+        hits = _get_json("https://api.deezer.com/search?limit=25&q=" + urllib.parse.quote(" ".join(names))).get("data") or []
+    except Exception:
+        return None
+    first = names[0].lower()
+    for h in hits:
+        t = (h.get("title_short") or h.get("title") or "").strip()
+        if (h.get("artist") or {}).get("name", "").lower() == first and t and not words(t) <= words(title):
+            return t
+    return None
 
 
 def polish(artist, title):
