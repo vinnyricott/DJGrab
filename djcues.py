@@ -46,7 +46,8 @@ def remember(path, cues, bpm, first_beat, title="", artist=""):
         "cues": [[int(s), n, float(ms) / 1000.0, int(rgb)] for s, n, ms, rgb in cues],
         "bpm": float(bpm or 0), "first": float(first_beat or 0),
         "title": title, "artist": artist, "t": time.time()}
-    d = {p: v for p, v in d.items() if os.path.exists(p)}   # drop tracks that were moved away
+    me = str(Path(path).resolve())
+    d = {p: v for p, v in d.items() if p == me or os.path.exists(p)}   # drop tracks moved away (not this one: it may still be being written)
     _save(d)
     try:
         export(Path(path).parent, d)

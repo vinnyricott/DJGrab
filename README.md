@@ -9,7 +9,9 @@
 - **Matched volume.** Every track comes out at the same loudness without squashing or clipping.
 - **Quality check.** Low-bitrate or muffled sources are flagged before they reach your library.
 - **DJ intro versions.** Songs that start with vocals get a second copy with a mixable beat intro, made the way DJ pools make them.
-- **Cue points and beat grids.** Start, Chorus, Breakdown and Outro are set automatically, for Serato, Rekordbox, Traktor and VirtualDJ.
+- **Hook tease (optional).** When it fits the song, 2 bars of the chorus play softly in the intro so the crowd knows what's coming.
+- **Outro versions (optional, off by default).** 16 bars of the song's beat after the vocals end, to mix out of.
+- **Cue points and beat grids.** Start, Chorus, Breakdown and Outro are set automatically (intro versions also get Halfway), for Serato, Rekordbox, Traktor and VirtualDJ.
 - **Genre folders (optional).** New downloads can be sorted into Simple or Detailed genre folders.
 - **Automatic updates.**
 

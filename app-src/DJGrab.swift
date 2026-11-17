@@ -23,6 +23,10 @@ let updateFeed = "https://raw.githubusercontent.com/vinnyricott/djgrab/main/late
 // Symlink to ~/Documents/DJ Grab (DJ Grab's code folder), where updates are dropped in. Set up by build_app.sh.
 let updatesDir = supportDir.appendingPathComponent("updates")
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+/// How a version number is shown: up to 99 as is ("v99"); from 100 on as 1.0.0 style, where each small
+/// update adds 1 to the last number (1.0.1) and a big one moves to the next 10 (1.1.0)
+func shownVersion(_ v: Int) -> String { v < 100 ? "\(v)" : "\(v / 100).\(v / 10 % 10).\(v % 10)" }
+func shownVersion(_ s: String) -> String { shownVersion(Int(s) ?? 0) }
 
 /// Free space left on the USB drive, e.g. "48.2 GB free".
 func usbFree(_ name: String?) -> String {
@@ -566,6 +570,8 @@ final class Store: ObservableObject {
         env["PATH"] = toolPATH + ":" + (env["PATH"] ?? "")
         env["PYTHONUNBUFFERED"] = "1"
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
+        env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") ?? "fits"
+        env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
         p.environment = env
 
@@ -752,7 +758,7 @@ final class Store: ObservableObject {
                 // updates install on their own as soon as nothing is running (no trip to Settings)
                 if UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? !ownerCopy, st.updateAvailable, !st.updatePreparing, !st.updating, !st.busy,
                    !ToolsStore.shared.running, Preview.shared.playing == nil {
-                    st.banner = "Installing update v\(st.availableVersion)… DJ Grab will reopen by itself"
+                    st.banner = "Installing update v\(shownVersion(st.availableVersion))… DJ Grab will reopen by itself"
                     st.installUpdate()
                 }
             }
@@ -869,7 +875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // just updated? say so, so you know the new version is the one running
         let last = UserDefaults.standard.integer(forKey: "lastRunVersion")
         if last != 0 && last < (Int(appVersion) ?? 0) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Store.shared.banner = "✓ Updated to v\(appVersion)" }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Store.shared.banner = "✓ Updated to v\(shownVersion(appVersion))" }
         }
         UserDefaults.standard.set(Int(appVersion) ?? 0, forKey: "lastRunVersion")
         Store.shared.checkUpdateAvailable()
@@ -1695,7 +1701,7 @@ struct ContentView: View {
                 }
             }
             HStack(spacing: 10) {
-                Text("v\(appVersion)").foregroundStyle(.tertiary).font(t.font(11))
+                Text("v\(shownVersion(appVersion))").foregroundStyle(.tertiary).font(t.font(11))
                 Image(systemName: "folder")
                 Text((store.outputFolder as NSString).lastPathComponent)
                     .lineLimit(1).truncationMode(.middle)
@@ -1771,6 +1777,8 @@ struct SettingsView: View {
     @AppStorage("normalizeLUFS") private var normalize = -10.0
     @AppStorage("autoUpdate") private var autoUpdate = !ownerCopy     // on for everyone, off on Vinny's Mac
     @AppStorage("introBars8") private var introBars = 0
+    @AppStorage("hookTease") private var hookTease = "fits"
+    @AppStorage("outroVersions") private var outros = false
     @ObservedObject private var storeObs = Store.shared
     @AppStorage("makeIntros") private var sharedIntros = false
     @AppStorage("uiLook") private var look = "neon"
@@ -1890,6 +1898,20 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section("Extras") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("Hook tease", selection: $hookTease) {
+                        Text("Off").tag("off"); Text("When it fits").tag("fits"); Text("Always").tag("always")
+                    }
+                    Text("Plays 2 bars of the chorus vocal softly during the intro, then 4 bars of beat alone before the song, so the crowd hears what's coming. When it fits: only for hip hop, R&B, pop, latin, afro and caribbean songs with a short, clean, repeating hook that matches the intro's key, never when the song opens on its chorus, and it stops for a genre if you keep giving those intros 👎.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Outro versions", isOn: $outros)
+                    Text("Off by default. When on, songs that end without a beat to mix out of also get \"Song (Outro).mp3\": the song until its vocals end, then 16 bars of its own beat with an Outro cue where the beat starts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             }
         .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -1994,7 +2016,7 @@ struct SettingsView: View {
                 }
             }
             Section {
-                LabeledContent("Version", value: appVersion)
+                LabeledContent("Version", value: shownVersion(appVersion))
             }
             }
         .formStyle(.grouped)
@@ -2303,7 +2325,7 @@ final class ToolsStore: ObservableObject {
     @Published var pct: Double = 0
     @Published var status = ""
     @Published var lastRun: String = UserDefaults.standard.string(forKey: "introsLastRun") ?? ""
-    private var runLabel = ""
+    @Published var runLabel = ""
     @Published var results: [ToolResult] = []
     @Published var waiting: [String] = UserDefaults.standard.stringArray(forKey: "introsWaiting") ?? []
     private var proc: Process?
@@ -2480,7 +2502,16 @@ final class ToolsStore: ObservableObject {
     }
 
     func start(files: [String]?, quiet: Bool, mode: String = "files") {
-        guard !running else { return }
+        if running {
+            // busy with another song: line these up next instead of ignoring the click
+            if let f = files, !quiet {
+                for p in f where !waiting.contains(p) { waiting.append(p) }
+                saveWaiting()
+                let name = f.count == 1 ? ((f[0] as NSString).lastPathComponent as NSString).deletingPathExtension : "\(f.count) songs"
+                status = "Queued: \(name) (\(waiting.count) waiting, starts when this one finishes)"
+            }
+            return
+        }
         let chosen = folder.hasPrefix("/")          // a folder picked anywhere on the computer
         if chosen && files == nil {
             guard FileManager.default.fileExists(atPath: folder) else {
@@ -2520,6 +2551,8 @@ final class ToolsStore: ObservableObject {
         env["PATH"] = toolPATH + ":" + (env["PATH"] ?? "")
         env["PYTHONUNBUFFERED"] = "1"
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
+        env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") ?? "fits"
+        env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
         if !isAdmin { env["DJGRAB_PLAIN"] = "1" }     // no renaming, no crates: only cues + intro versions
         p.environment = env
@@ -2538,6 +2571,7 @@ final class ToolsStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.running = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.tryWaiting() }   // queued songs go next
                 self.redoing = nil
                 self.etaTimer?.invalidate(); self.etaTimer = nil
                 self.proc = nil
@@ -2682,12 +2716,12 @@ final class ToolsStore: ObservableObject {
             songStart = Date(); pauseStart = nil
             marks = [(0, 0)]
             etaDoneAt = nil
+            current = name; stage = "Starting"; pct = 0           // the song shows as soon as it starts
+            currentPath = e["path"] as? String
         case "eta":
             // the engine knows which steps this song still needs and how long each takes on this Mac
             if let d = e["done_at"] as? Double { etaDoneAt = Date(timeIntervalSince1970: d) }
-            current = name; stage = "Starting"; pct = 0
-            currentPath = e["path"] as? String
-            if status.hasPrefix("Paused") { status = "Processing \(targetName)" }
+            // (the time estimate comes several times per song: it must not reset the song or its progress)
         case "progress":
             stage = e["stage"] as? String ?? stage
             pct = (e["pct"] as? Double) ?? Double(e["pct"] as? Int ?? 0)
@@ -2721,7 +2755,10 @@ final class ToolsStore: ObservableObject {
             var text: String
             if ev == "done" {
                 var parts = [(e["cues"] as? [String] ?? []).joined(separator: " · ")]
-                if e["intro"] != nil { parts.append("Intro version") }
+                if e["intro"] != nil {
+                    let ic = (e["intro_cues"] as? [String] ?? []).joined(separator: " · ")
+                    parts.append(ic.isEmpty ? "Intro version" : "Intro version: \(ic)")
+                }
                 if let n = e["note"] as? String { parts.append(n) }
                 text = parts.filter { !$0.isEmpty }.joined(separator: "   —   ")
             } else {
@@ -2826,13 +2863,73 @@ func menuBarIcon(busy: Bool) -> NSImage {
 struct IntroActivity: View {
     @ObservedObject private var tools = ToolsStore.shared
     var body: some View {
-        if tools.running && !tools.current.isEmpty {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Making intro & cues: \(tools.current)" + (tools.songEta.isEmpty ? "" : " · \(tools.songEta)"))
-                    .font(.caption).foregroundStyle(Theme.current.accent2).lineLimit(1).truncationMode(.middle)
+        if tools.running {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(tools.current.isEmpty ? "Starting: \(tools.runLabel.isEmpty ? "loading the tools" : tools.runLabel)…"
+                         : "Making intro & cues: \(tools.current)" + (tools.songEta.isEmpty ? "" : " · \(tools.songEta)"))
+                        .font(.caption).foregroundStyle(Theme.current.accent2).lineLimit(1).truncationMode(.middle)
+                }
+                if tools.current.isEmpty || tools.pct < 16 { ProgressView().progressViewStyle(.linear) }
+                else { ProgressView(value: min(tools.pct, 100), total: 100) }
             }
             .help("Intros & Cues is working on this song in the background")
+        }
+    }
+}
+
+/// The songs in a folder, to listen to (and to their intro versions) without running the folder
+struct FolderSongs: View {
+    let folder: String
+    @ObservedObject private var tools = ToolsStore.shared
+    @State private var songs: [String] = []
+    var root: String {
+        if folder.hasPrefix("/") { return folder }
+        let base = isAdmin ? tools.libraryRoot : Store.shared.outputFolder
+        return folder.isEmpty ? base : base + "/" + folder
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(songs.count) songs in \(folder.isEmpty ? "your library" : folder)").font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(songs, id: \.self) { p in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(((p as NSString).lastPathComponent as NSString).deletingPathExtension).lineLimit(1)
+                                Text(((p as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            VStack(spacing: 1) { PlayButton(path: p); Text("Original").font(.system(size: 9)).foregroundStyle(.secondary) }
+                            if let ip = introFile(p) {
+                                VStack(spacing: 1) { PlayButton(path: ip); Text("Intro").font(.system(size: 9)).foregroundStyle(.secondary) }
+                            }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+        }
+        .onAppear(perform: load)
+        .onChange(of: folder) { _ in load() }
+    }
+    private func load() {
+        let r = root
+        DispatchQueue.global().async {
+            var out: [String] = []
+            if let en = FileManager.default.enumerator(atPath: r) {
+                for case let f as String in en {
+                    let name = (f as NSString).lastPathComponent
+                    if f.hasPrefix("_") || f.contains("/_") || name.hasPrefix(".") { continue }
+                    if !name.lowercased().hasSuffix(".mp3") || name.hasSuffix(" (Intro).mp3") || name.hasSuffix(" (Outro).mp3") { continue }
+                    out.append(r + "/" + f)
+                }
+            }
+            out.sort { ($0 as NSString).lastPathComponent.localizedCaseInsensitiveCompare(($1 as NSString).lastPathComponent) == .orderedAscending }
+            DispatchQueue.main.async { songs = out }
         }
     }
 }
@@ -2864,12 +2961,13 @@ struct SongSearch: View {
                     PlayButton(path: p).help("Play the song")
                     if let ip = introFile(p) { PlayButton(path: ip).help("Play its intro version").opacity(0.7) }
                     let has = introFile(p) != nil
-                    Button(has ? "Redo intro" : "Run") {
-                        if has { tools.start(files: [p], quiet: false, mode: "another") } else { tools.start(file: p) }
+                    Button(tools.running ? (tools.waiting.contains(p) ? "Queued" : "Queue") : (has ? "Redo intro" : "Run")) {
+                        if has && !tools.running { tools.start(files: [p], quiet: false, mode: "another") } else { tools.start(file: p) }
                         q = ""; hits = []
                     }
-                    .disabled(tools.running)
-                    .help(has ? "It has an intro version: make a different one (the old one goes to _To Delete)"
+                    .disabled(tools.waiting.contains(p))
+                    .help(tools.running ? "Add this song to the list: it runs as soon as the current one is done"
+                          : has ? "It has an intro version: make a different one (the old one goes to _To Delete)"
                               : "Beatgrid, cues and (if it needs one) an intro for this song only")
                 }
                 .padding(.horizontal, 8)
@@ -2911,6 +3009,7 @@ struct ToolsView: View {
     @AppStorage("makeIntros") private var makeIntros = isAdmin      // others: off until they turn it on
     @AppStorage("autoIntros") private var autoIntros = true
     @AppStorage("introFolder") private var folder = ""
+    @State private var browsing = false
     @State private var choices: [String] = []
     @State private var lastFolder = ""
     @State private var targeted = false
@@ -2997,6 +3096,8 @@ struct ToolsView: View {
                             .buttonStyle(.borderedProminent)
                     }
                 }
+                Button(browsing ? "Hide songs" : "Songs") { browsing.toggle() }
+                    .help("List the songs in this folder to listen to them (and their intros) without running anything")
                 if tools.total > 0 {
                     Text("\(tools.done) / \(tools.total)").foregroundStyle(.secondary).monospacedDigit()
                 }
@@ -3016,6 +3117,7 @@ struct ToolsView: View {
                                 .help("Skip the intro version for this song (now and in future runs). It still gets cue points.")
                         }
                         Spacer()
+                        if tools.running { ProgressView().controlSize(.small) }
                         Text(tools.songEta).font(.caption.weight(.medium)).foregroundStyle(Theme.current.accent2)
                     }
                 }
@@ -3023,7 +3125,13 @@ struct ToolsView: View {
             if !tools.status.isEmpty {
                 Text(tools.status).font(.callout).foregroundStyle(tools.status.hasPrefix("Paused") ? Color.orange : Color.secondary)
             }
+            if tools.current.isEmpty { IntroActivity() }   // only before the song card shows (tools loading)
+            if !tools.waiting.isEmpty {
+                Text("Up next: " + tools.waiting.map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension }.joined(separator: ", "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
             SongSearch()
+            if browsing { FolderSongs(folder: folder) }
             Text("Drop an MP3 to process one song")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 34)
@@ -3065,9 +3173,20 @@ struct ToolsView: View {
                     }
                     if r.madeIntro && r.path != nil {
                         Spacer()
+                        if let song = r.song ?? r.path?.replacingOccurrences(of: " (Intro).mp3", with: ".mp3"),
+                           FileManager.default.fileExists(atPath: song) {
+                            VStack(spacing: 1) {
+                                PlayButton(path: song)
+                                Text("Original").font(.system(size: 9)).foregroundStyle(.secondary)
+                            }
+                            .help("Play the original song, to compare")
+                        }
                         if let ip = r.path, FileManager.default.fileExists(atPath: ip) {
-                            PlayButton(path: ip)
-                                .help("Play the intro version from the start")
+                            VStack(spacing: 1) {
+                                PlayButton(path: ip)
+                                Text("Intro").font(.system(size: 9)).foregroundStyle(.secondary)
+                            }
+                            .help("Play the intro version from the start")
                         }
                         let v = ratings.ratings[r.path!] ?? 0
                         Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { ratings.rate(r, 1) } } label: {
@@ -3131,7 +3250,7 @@ struct ToolsView: View {
                 }
             }
             HStack {
-                Text("v\(appVersion)").foregroundStyle(.tertiary).font(.caption)
+                Text("v\(shownVersion(appVersion))").foregroundStyle(.tertiary).font(.caption)
                 if !tools.lastRun.isEmpty {
                     Text("Last run: \(tools.lastRun)").foregroundStyle(.secondary).font(.caption).lineLimit(1)
                         .padding(.leading, 8)
@@ -3180,9 +3299,9 @@ struct UpdateBar: View {
             HStack {
                 Image(systemName: "arrow.down.app.fill").foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(store.updatePreparing ? "Update v\(store.availableVersion) is still being prepared…"
-                                               : "Update v\(store.availableVersion) is ready").font(.callout.weight(.semibold))
-                    Text("You have v\(appVersion)").font(.caption).foregroundStyle(.secondary)
+                    Text(store.updatePreparing ? "Update v\(shownVersion(store.availableVersion)) is still being prepared…"
+                                               : "Update v\(shownVersion(store.availableVersion)) is ready").font(.callout.weight(.semibold))
+                    Text("You have v\(shownVersion(appVersion))").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Install update") { store.installUpdate() }
@@ -3193,6 +3312,21 @@ struct UpdateBar: View {
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12)))
+        }
+    }
+}
+
+struct StopSoundButton: View {
+    @ObservedObject private var preview = Preview.shared
+    var body: some View {
+        if preview.playing != nil {
+            Button { preview.stop() } label: {
+                Label("Stop", systemImage: "stop.fill")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.pink)
+            .help("Stop the song that's playing: " + ((preview.playing! as NSString).lastPathComponent as NSString).deletingPathExtension)
         }
     }
 }
@@ -3229,6 +3363,10 @@ struct RootView: View {
                     .tabItem { Label("Intros & Cues", systemImage: "waveform") }
             }
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {   // a song preview is playing: stop it from anywhere
+                    StopSoundButton()
+                }
+                .hiddenGlass()
                 ToolbarItem(placement: .primaryAction) {   // settings in the title bar, top right (the Mac spot)
                     gearButton
                 }

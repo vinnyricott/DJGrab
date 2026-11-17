@@ -42,7 +42,8 @@ echo "Building DJ Grab version $VER"
 BUILD="$(mktemp -d)"
 APP="$BUILD/DJ Grab.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-sed "s/__VERSION__/$VER/g" "$SRC/Info.plist" > "$APP/Contents/Info.plist"
+SHOWN="$VER"; [[ $VER -ge 100 ]] && SHOWN="$((VER / 100)).$((VER / 10 % 10)).$((VER % 10))"
+sed -e "s/<key>CFBundleShortVersionString<\/key><string>__VERSION__/<key>CFBundleShortVersionString<\/key><string>$SHOWN/" -e "s/__VERSION__/$VER/g" "$SRC/Info.plist" > "$APP/Contents/Info.plist"
 if [[ -d "$SRC/AppIcon.iconset" ]]; then
   iconutil -c icns "$SRC/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns" || true
 fi
@@ -55,7 +56,35 @@ cp "$SRC/VERSION" "$ENG/ENGINE_VERSION"
 cp "$SRC/setup.sh" "$APP/Contents/Resources/setup.sh"
 swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
   "$SRC/DJGrab.swift" -o "$APP/Contents/MacOS/DJGrab"
-codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
+# Signed with the same local certificate every time, so macOS remembers the folder / USB permissions you gave
+# DJ Grab across updates (an ad-hoc signature changes with every build, and macOS asks again each time).
+# The certificate is made once on this Mac, only for signing DJ Grab; it never leaves the Mac.
+IDENT="DJ Grab Local Signing"
+KC="$HOME/Library/Keychains/login.keychain-db"
+if ! security find-certificate -c "$IDENT" "$KC" >/dev/null 2>&1; then
+  T="$(mktemp -d)"
+  cat > "$T/cfg" <<CFG
+[req]
+distinguished_name=dn
+x509_extensions=ext
+prompt=no
+[dn]
+CN=$IDENT
+[ext]
+keyUsage=critical,digitalSignature
+extendedKeyUsage=critical,codeSigning
+basicConstraints=critical,CA:false
+CFG
+  if /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -keyout "$T/k.pem" -out "$T/c.pem" -config "$T/cfg" >/dev/null 2>&1 \
+     && /usr/bin/openssl pkcs12 -export -inkey "$T/k.pem" -in "$T/c.pem" -out "$T/id.p12" -passout pass:djgrab -name "$IDENT" >/dev/null 2>&1; then
+    security import "$T/id.p12" -k "$KC" -P djgrab -T /usr/bin/codesign >/dev/null 2>&1 || true
+  fi
+  rm -rf "$T"
+fi
+if ! codesign --force --deep -s "$IDENT" "$APP" >/dev/null 2>&1; then
+  codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
+  echo "Signed ad hoc (local certificate not available)"
+fi
 
 # Replace the app wherever it's installed now
 if [[ -d "/Applications/DJ Grab.app" ]]; then DEST="/Applications"

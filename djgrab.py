@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 
 APP_SUPPORT = Path.home() / "Library" / "Application Support" / "DJGrab"
-LOUDNESS_LOG = APP_SUPPORT / "loudness.json"
 LOSSLESS_CODECS = {"flac", "alac", "wav", "aiff", "pcm_s16le", "pcm_s24le", "pcm_s32le",
                    "pcm_s16be", "pcm_s24be", "pcm_f32le", "pcm_f32be"}
 
@@ -384,12 +383,6 @@ def official_cover(artist, title, out_jpg):
     return False
 
 
-def make_cover(thumb, out_jpg):
-    """Center-crop to square (YouTube thumbs are 16:9) and save as 800px JPEG."""
-    r = run([FFMPEG, "-y", "-v", "error", "-i", str(thumb), "-vf",
-             "crop='min(iw,ih)':'min(iw,ih)',scale='min(800,iw)':-2", "-frames:v", "1",
-             "-q:v", "2", str(out_jpg)])
-    return r.returncode == 0 and out_jpg.exists()
 
 
 def write_tags(path, meta, cover):
@@ -733,7 +726,6 @@ EDIT_WORDS = re.compile(r"\b(remix|rmx|edit|extended|mix|intro|version|live|boot
                         r"acapella|acap|instrumental|mashup|cover|jersey|club)\b", re.I)
 
 
-_ACAP_LABEL = re.compile(r"\s*\(Acap (?:In|Out|In-Out)\)", re.I)     # DJ Grab's own label: same song
 
 
 def lookup_duration(artist, title):
@@ -1123,6 +1115,72 @@ def score_candidate(q_artist, q_title, cand, typical_len=None):
     return sc
 
 
+def friendly_error(ex):
+    """Plain-language reasons for the common failures, instead of the raw technical message."""
+    m = str(ex)
+    low = m.lower()
+    rules = [
+        (("getaddrinfo", "name resolution", "nodename nor servname", "network is unreachable", "no route to host",
+          "failed to resolve", "connection refused", "urlopen error", "unable to connect", "network is down",
+          "internet connection appears to be offline"),
+         "No internet connection. Connect to Wi-Fi and try again."),
+        (("timed out", "timeout", "read operation timed out"),
+         "The connection is too slow or dropped. Check your Wi-Fi and try again."),
+        (("http error 429", "too many requests"),
+         "YouTube is limiting downloads right now. Wait a few minutes, then retry."),
+        (("sign in to confirm", "confirm you're not a bot", "confirm you are not a bot"),
+         "YouTube wants to check you're not a bot. Turn on Browser sign-in in Settings, or try again later."),
+        (("private video",), "That video is private. Try a different link."),
+        (("video unavailable", "has been removed", "no longer available", "account associated with this video has been terminated"),
+         "That video was removed or isn't available. Try a different link."),
+        (("not available in your country", "geo restrict", "blocked it in your country"),
+         "That video is blocked in your country. Try a different upload."),
+        (("age-restricted", "age restricted", "inappropriate for some users"),
+         "That video is age-restricted. Turn on Browser sign-in in Settings to get it."),
+        (("no space left on device",), "The drive is full. Free up some space and try again."),
+        (("permission denied", "operation not permitted", "read-only file system"),
+         "Can't save to that folder. Pick a different folder in Settings."),
+        (("isn't plugged in",), m),
+        (("ffmpeg", "ffprobe"), "The audio converter isn't working. Reopen DJ Grab to repair it."),
+        (("unsupported url",), "That link isn't a song or video page DJ Grab can read."),
+    ]
+    for keys, msg in rules:
+        if any(k in low for k in keys):
+            return msg
+    return m[:300]
+
+
+def why_not_found(a, t, cands):
+    """A clear reason when no upload could be used, worked out from what YouTube did return."""
+    name = f'"{t}"' + (f" by {a}" if a else "")
+    if not cands:
+        return f"Couldn't find {name} anywhere. Check the spelling, or add the artist."
+    tl = [(c.get("title") or "").lower() for c in cands]
+    has_title = [x for x in tl if all(w in x for w in _words(t))]
+    if not has_title:
+        return f"Couldn't find a song called {name}. Check the spelling" + ("" if a else ", or add the artist") + "."
+    if a:
+        aw = _words(primary_artist(a))
+        by_artist = [x for x, c in zip(tl, cands) if all(w in x + " " + (c.get("channel") or "").lower() for w in aw)
+                     and all(w in x for w in _words(t))]
+        if not by_artist:
+            return f"Found {t}, but only by other artists or cover versions, not by {a}. Check the artist name."
+    else:
+        by_artist = has_title
+    reasons = []
+    if any(LIVE_RE.search(x) for x in by_artist):
+        reasons.append("live")
+    if any(BAD_VERSION.search(x) for x in by_artist):
+        found = {m.group(0).lower() for x in by_artist for m in BAD_VERSION.finditer(x)}
+        reasons.append(" / ".join(sorted(found))[:60])
+    long_ = [c for c in cands if (c.get("duration") or 0) > 480]
+    if long_:
+        reasons.append("over 8 minutes long")
+    if reasons:
+        return f"Only found versions of {name} that aren't the normal song ({', '.join(reasons)}). Paste a YouTube link to the one you want."
+    return f"Found {name}, but no upload passed the quality checks. Paste a YouTube link to the one you want."
+
+
 def search_song(query):
     """Find the best YouTube upload for 'Artist - Title'. Returns (url, label) or (None, reason)."""
     import yt_dlp
@@ -1395,10 +1453,27 @@ def crate_header(subcrates):
     return _tag("vrsn", _u16(CRATE_VERSION))
 
 
+HOLIDAYS = [(r"christmas|xmas|santa claus|mistletoe|jingle bell|sleigh|rudolph|frosty|winter wonderland|"
+             r"silent night|feliz navidad|carol of the bells|holly jolly|let it snow", "Christmas"),
+            (r"halloween|monster mash|ghostbusters|spooky|thriller blend", "Halloween"),
+            (r"thanksgiving", "Thanksgiving"), (r"hanukkah|chanukah|dreidel", "Hanukkah"),
+            (r"new year|auld lang syne", "New Year"), (r"valentine'?s day", "Valentine's Day"),
+            (r"easter bunny|happy easter", "Easter"), (r"4th of july|fourth of july", "4th of July")]
+
+
+def holiday_folder(title):
+    """Holidays/<holiday> for a holiday song (by its title), else None. Owner library only."""
+    t = (title or "").lower()
+    for pat, name in HOLIDAYS:
+        if re.search(pat, t):
+            return f"Holidays/{name}"
+    return None
+
+
 def crate_name_for(folder, root):
     rel = Path(folder).resolve().relative_to(root.resolve())
     parts = list(rel.parts)
-    tops = {p.split("/")[0] for p in GENRE_PATH.values()}
+    tops = {p.split("/")[0] for p in GENRE_PATH.values()} | {"Holidays"}
     # a track filed into a genre folder goes into the matching GENRES crate
     if len(parts) >= 2 and parts[1] in tops and library_root(Path(root, parts[0], "x")):
         return "%%".join(["GENRES"] + parts[1:])
@@ -2297,12 +2372,6 @@ class LowQualityUpload(HotUpload):
         self.peak = 0
 
 
-class MuffledUpload(HotUpload):
-    """The upload was made from a low-quality copy: everything above ~12-14 kHz is cut off (cymbals, guitars
-    and the room sound dull; vocals can still sound fine), whatever the stream's bitrate says."""
-    def __init__(self, cutoff):
-        Exception.__init__(self, f"muffled upload (nothing above {cutoff / 1000:.0f} kHz)")
-        self.peak = 0
 
 
 def high_cutoff(path):
@@ -2356,12 +2425,17 @@ def process_entry(info, src_path, thumb_path, outdir, url, args):
     genre_code = None
     if lib:
         genre_code = pick_genre(artist, title, info)
-        if not genre_code:
+        new_folder = holiday_folder(title)        # holiday songs go to Holidays/<holiday> first...
+        if new_folder and genre_code and GENRE_PATH.get(genre_code, "").startswith("Hip Hop"):
+            new_folder = None                     # ...but not a rap song that only names a holiday
+        if new_folder:                            # (XXXTENTACION - A Ghetto Christmas Carol stays in Rap)
+            genre_code = None
+        if not genre_code and not new_folder:
             emit("progress", url=url, stage="Finding the genre", pct=78)
             genre_code = lookup_genre(artist, title)
             if genre_code:
                 _remember(artist, genre_code)
-        if not genre_code:
+        if not genre_code and not new_folder:
             # no folder for this kind of song yet: make a specific one for it (your library only)
             new_folder = new_genre_folder(artist, title)
             if new_folder:

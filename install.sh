@@ -4,7 +4,7 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUPPORT="$HOME/Library/Application Support/DJGrab"
-HOME_DIR="$HOME/DJ music/.djgrab"       # where DJ Grab's code lives (hidden folder)
+HOME_DIR="$HOME/Documents/DJ Grab"      # where DJ Grab's code lives
 OUT_DEFAULT="$HOME/DJ music/DJ Grab"
 
 say() { printf "\n\033[1;36m==> %s\033[0m\n" "$1"; }
@@ -35,7 +35,7 @@ PY="$(brew --prefix python@3.12)/bin/python3.12"
 say "Setting up the download engine"
 mkdir -p "$SUPPORT" "$HOME_DIR"
 if [[ "$HERE" != "$HOME_DIR" ]]; then
-  cp -R "$HERE/djgrab.py" "$HERE/build_app.sh" "$HERE/app-src" "$HERE/README.md" "$HOME_DIR/"
+  cp -R "$HERE/djgrab.py" "$HERE/djtools.py" "$HERE/djcues.py" "$HERE/hqsep.py" "$HERE/roformer" "$HERE/"*.json "$HERE/build_app.sh" "$HERE/app-src" "$HERE/README.md" "$HOME_DIR/"
 fi
 [[ -d "$SUPPORT/venv" ]] || "$PY" -m venv "$SUPPORT/venv"
 "$SUPPORT/venv/bin/python3" -m pip install -q --upgrade pip
