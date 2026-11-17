@@ -22,7 +22,11 @@
 3. The first time, right-click DJ Grab and choose **Open**, then **Open** again. macOS asks this once for apps from outside the App Store.
 4. A setup window asks for your DJ software, music folder and a few preferences. DJ Grab installs the tools it needs on first launch.
 
-Windows version coming soon.
+## Install (Windows)
+
+1. Download **[Install DJ Grab.cmd](https://github.com/vinnyricott/DJGrab/raw/main/win/Install%20DJ%20Grab.cmd)** and double-click it. If Windows shows "Windows protected your PC", click **More info**, then **Run anyway**.
+2. It sets everything up by itself (a few minutes the first time) and adds DJ Grab to the Start menu and desktop. No admin rights needed.
+3. A setup window asks for your DJ software, music folder and a few preferences. Updates install themselves.
 
 ## Using your cue points
 

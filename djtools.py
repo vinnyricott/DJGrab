@@ -484,7 +484,7 @@ def _demucs_model():
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         import torch
         from demucs.pretrained import get_model
-        dev = "mps" if torch.backends.mps.is_available() else "cpu"
+        dev = ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
         m = get_model("htdemucs")
         m.eval()
         _MODEL = (m, dev)
@@ -498,6 +498,8 @@ def _separate_cli(wav, outdir):
         import torch
         if torch.backends.mps.is_available():
             dev = "mps"
+        elif torch.cuda.is_available():          # Windows PCs with an NVIDIA card
+            dev = "cuda"
     except Exception:
         pass
     r = subprocess.run([sys.executable, "-m", "demucs", "-n", "htdemucs", "-d", dev, "-o", str(outdir),
@@ -551,7 +553,7 @@ def _drums_ft():
         pkg = torch.hub.load_state_dict_from_url(DRUMS_FT_URL, map_location="cpu", check_hash=True)
         m = load_model(pkg)
         m.eval()
-        dev = "mps" if torch.backends.mps.is_available() else "cpu"
+        dev = ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
         _DRUMS_FT = (m, dev)
     return _DRUMS_FT
 
@@ -1135,7 +1137,7 @@ def _beat_model():
     if _BT is None:
         import torch
         from beat_this.inference import Audio2Beats
-        dev = "mps" if torch.backends.mps.is_available() else "cpu"
+        dev = ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
         try:
             _BT = Audio2Beats(checkpoint_path="final0", device=dev, dbn=False)
         except Exception:

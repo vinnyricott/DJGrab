@@ -71,7 +71,7 @@ def load(model_dir):
         m = BSRoformer(**CONFIG)
         sd = torch.load(str(model_path(model_dir)), map_location="cpu", weights_only=True)
         m.load_state_dict(sd)
-        dev = "mps" if torch.backends.mps.is_available() else "cpu"
+        dev = ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
         m.to(dev).eval()
         _MODEL = (m, dev)
     return _MODEL

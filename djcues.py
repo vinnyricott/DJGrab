@@ -155,7 +155,7 @@ def _vdj_running():
         if WIN:
             o = subprocess.run(["tasklist"], capture_output=True, text=True).stdout
         else:
-            o = subprocess.run(["pgrep", "-ix", "virtualdj"], capture_output=True, text=True).stdout
+            o = subprocess.run(["pgrep", "-ix", "virtualdj"], capture_output=True, text=True).stdout  # macOS
         return "virtualdj" in o.lower() or (not WIN and o.strip() != "")
     except Exception:
         return True                                     # unsure: treat as open and wait

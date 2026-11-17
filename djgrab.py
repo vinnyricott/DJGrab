@@ -20,7 +20,10 @@ import tempfile
 import time
 from pathlib import Path
 
-APP_SUPPORT = Path.home() / "Library" / "Application Support" / "DJGrab"
+import platform
+WINDOWS = platform.system() == "Windows"
+APP_SUPPORT = (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "DJ Grab" if WINDOWS
+               else Path.home() / "Library" / "Application Support" / "DJGrab")
 LOSSLESS_CODECS = {"flac", "alac", "wav", "aiff", "pcm_s16le", "pcm_s24le", "pcm_s32le",
                    "pcm_s16be", "pcm_s24be", "pcm_f32le", "pcm_f32be"}
 
@@ -53,11 +56,12 @@ def emit(event, **data):
 # --------------------------------------------------------------------------- tools
 
 def find_tool(name):
-    own = os.path.expanduser(f"~/Library/Application Support/DJGrab/bin/{name}")   # shared app's own copy
-    for p in (shutil.which(name), own, f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"):
+    exe = name + (".exe" if WINDOWS else "")
+    own = str(APP_SUPPORT / "bin" / exe)                                     # the app's own copy
+    for p in (own, shutil.which(name), f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"):
         if p and os.path.exists(p):
             return p
-    raise SystemExit(f"{name} not found. Run the installer again (it installs {name} with Homebrew).")
+    raise SystemExit(f"{name} not found. Open DJ Grab again and let it finish setting up.")
 
 
 FFMPEG = None
@@ -1380,8 +1384,12 @@ SERATO_SEEN = APP_SUPPORT / "serato_seen"
 def serato_running():
     """True while Serato is open, and for a minute after it closes (it can still be saving its library as it
     quits; touching the library then is what broke it once)."""
-    r = subprocess.run(["pgrep", "-if", r"Serato DJ (Pro|Lite)"], capture_output=True)
-    if r.returncode == 0:
+    if WINDOWS:
+        out = subprocess.run(["tasklist"], capture_output=True, text=True).stdout.lower()
+        up = "serato dj" in out
+    else:
+        up = subprocess.run(["pgrep", "-if", r"Serato DJ (Pro|Lite)"], capture_output=True).returncode == 0
+    if up:
         try:
             SERATO_SEEN.parent.mkdir(parents=True, exist_ok=True); SERATO_SEEN.write_text(str(time.time()))
         except OSError:
@@ -1483,15 +1491,31 @@ def crate_name_for(folder, root):
 class _CrateLock:
     """Only one DJ Grab process touches crate files or the pending list at a time."""
     def __enter__(self):
-        import fcntl
         APP_SUPPORT.mkdir(parents=True, exist_ok=True)
         self.f = open(APP_SUPPORT / "crates.lock", "w")
-        fcntl.flock(self.f, fcntl.LOCK_EX)
+        if WINDOWS:
+            import msvcrt
+            while True:
+                try:
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1); break
+                except OSError:
+                    time.sleep(0.2)
+        else:
+            import fcntl
+            fcntl.flock(self.f, fcntl.LOCK_EX)
         return self
 
     def __exit__(self, *a):
-        import fcntl
-        fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+        if WINDOWS:
+            import msvcrt
+            try:
+                self.f.seek(0); msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            import fcntl
+            fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
 
 
 def queue_for_crate(track_path, extra_crate=None):
@@ -1539,7 +1563,7 @@ def flush_crates():
 
 
 NAMES_CACHE = APP_SUPPORT / "serato_names_checked.json"
-VOLUMES = Path("/Volumes")
+VOLUMES = Path("/Volumes")          # macOS drives (owner library features; nothing on Windows)
 
 
 def restore_grids():
@@ -1647,7 +1671,7 @@ def fix_serato_names():
     except Exception:
         checked = {}
     fixed = 0
-    for vol in VOLUMES.iterdir():
+    for vol in (VOLUMES.iterdir() if VOLUMES.is_dir() else []):
         db = vol / "_Serato_" / "Library" / "location.sqlite"
         if not db.is_file() or not os.path.ismount(vol):
             continue
@@ -1729,7 +1753,7 @@ def audit_genres(budget=75.0):
         res = {}
     from mutagen.id3 import ID3
     t0, n = time.time(), 0
-    for vol in VOLUMES.iterdir():
+    for vol in (VOLUMES.iterdir() if VOLUMES.is_dir() else []):
         root = vol / vol.name
         if not root.is_dir() or not os.path.ismount(vol):
             continue
@@ -2763,7 +2787,7 @@ def main():
             r = apply_renames()
             if r:
                 emit("renamed", count=r, message=f"Cleaned up the names of {r} songs")
-            for vol in VOLUMES.iterdir():
+            for vol in (VOLUMES.iterdir() if VOLUMES.is_dir() else []):
                 if (vol / "_Serato_").is_dir() and os.path.ismount(vol):
                     try:
                         purge_serato_refs(vol, "_To Delete/")
