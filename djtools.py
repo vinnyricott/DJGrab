@@ -1008,7 +1008,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 17              # no tension bar or filter sweep; clash check lines the song up first; repairs only when clean
+INTRO_RULE = 18              # snare build redone properly (own snare, exact grid, last 2 beats, only where it fits); no filter sweep
 
 
 def _is_dance(p):
@@ -1031,6 +1031,7 @@ RULE_CHANGES = {
     15: lambda p, kind: Path(p).name in NO_CLEAN_INTRO,      # left without an intro after 2 tries: 3 tries, best kept and flagged
     16: lambda p, kind: Path(p).name in _flagged_before(),   # drums-clash check misread songs a few ms off: checked again
     17: lambda p, kind: kind == "intro",                     # no snare-roll / riser build, no filter sweep: every intro again
+    18: lambda p, kind: kind == "intro",                     # snare build redone: the song's own snare, on the grid, only where it fits
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
@@ -1937,6 +1938,84 @@ def _roll(bar, drum_bar):
     return out
 
 
+BUILD_GENRES = {"Hip Hop", "House", "Dance & Electronic", "Club", "Pop", "Latin", "Caribbean", "African"}
+
+
+def _snare_hit(dbars):
+    """The song's own snare, cut from its drum part at the hit's real attack: of the backbeat hits (beats 2
+    and 4) in the given drum bars, the one with the most snare-band punch. Returns (hit audio, its length to
+    the next 16th) or None when there's no clear snare.
+    Returns (hit, where its attack sits against the grid in samples) so the roll keeps the song's own feel."""
+    best = None
+    for d in dbars:
+        d = np.asarray(d, "float32")
+        n = len(d)
+        if n < SR // 4:
+            continue
+        q = n // 4
+        mid = _highpass(d, 180.0)
+        mid = mid - _highpass(mid, 6000.0)
+        m = np.abs(mid).max(axis=1)
+        h = int(0.001 * SR)
+        for b in (1, 3):
+            a0 = b * q
+            lo, hi = max(0, a0 - int(0.04 * SR)), min(n, a0 + int(0.04 * SR))
+            w = m[lo:hi]
+            if len(w) < 10:
+                continue
+            env = np.array([w[k:k + h].max() for k in range(0, len(w) - h, h)])
+            rise = np.diff(env, prepend=env[0])
+            k = int(np.argmax(rise))
+            att = lo + max(0, k * h - int(0.002 * SR))
+            peak = float(env.max())
+            if best is None or peak > best[0]:
+                best = (peak, d, att, att - a0)
+    if best is None or best[0] < 0.02:
+        return None
+    _, d, att, off = best
+    L = len(d) // 16
+    hit = d[att:att + L].copy()
+    if len(hit) < L // 2:
+        return None
+    f = min(int(0.004 * SR), len(hit) // 4)
+    hit[-f:] *= np.linspace(1, 0, f, dtype="float32")[:, None]
+    return hit, off
+
+
+def tension_bar(d, rest, dbars, riser=False):
+    """The last bar before the song, done the DJ-pool way: beats 1-2 as they are, then the song's own snare
+    rolls on the exact grid (8ths on beat 3, 16ths on beat 4, getting louder) while its other drums drop out;
+    the bass steps back for those two beats so the song's first hit lands with full weight. d: this bar's
+    drums, rest: everything else in it. No silence before the song (it would sound like a gap).
+    Returns None when the song has no clear snare to roll (then the bar is left as it is)."""
+    n = len(d)
+    sh = _snare_hit(dbars)
+    if sh is None or n < SR // 2:
+        return None
+    hit, off = sh
+    half = n // 2
+    out = (d + rest).astype("float32").copy()
+    lift = rest[half:] - _lowpass(rest[half:], 150.0) * 0.7          # bass steps back, the music carries on
+    roll = np.zeros((n - half,) + d.shape[1:], "float32")
+    steps = [(0, n // 4, n // 8), (n // 4, n - half, n // 16)]       # beat 3 in 8ths, beat 4 in 16ths
+    for a, e, st in steps:
+        for t0 in range(a, e, max(1, st)):
+            t = t0 + off                         # where the song's own snare lands against the bar line
+            g = 0.55 + 0.45 * (t0 / max(1, n - half))
+            m = min(len(hit), len(roll) - max(t, 0))
+            if m > 0 and t >= 0:
+                roll[t:t + m] += hit[:m] * g
+    x = int(0.006 * SR)                                             # drums hand over to the roll smoothly
+    w = np.linspace(1, 0, x, dtype="float32")[:, None]
+    dk = d[half:].copy(); dk[:x] *= w; dk[x:] = 0
+    out[half:] = lift + dk + roll
+    if riser:
+        r = _riser(n)
+        lvl = float(np.sqrt(np.mean(out ** 2))) + 1e-9
+        out += r * (0.15 * lvl / (float(np.sqrt(np.mean(r ** 2))) + 1e-9))
+    return out.astype("float32")
+
+
 def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0, dance=False):
     """Per-bar layering for an intro (dbars / ibars: the drum stem and instrumental for each source bar).
     Built the way DJ-pool intros are (measured on 18 pool intros against their originals): the beat with
@@ -1970,8 +2049,11 @@ def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0, dance=Fa
             if i < bass_from:          # 16-bar intros: the bass line waits for Halfway (the kick keeps its low end)
                 bar = bar - bass
         out.append(bar.astype("float32"))
-    if tension:
-        apply_tension(out, dbars[-1].astype("float32"))
+    if tension and n >= 2:
+        d_ = dbars[-1].astype("float32")
+        tb = tension_bar(d_, out[-1] - d_, [dbars[j] for j in range(max(0, n - 4), n)], riser=dance)
+        if tb is not None:
+            out[-1] = tb
     return out
 
 
@@ -2744,7 +2826,10 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         # pop, R&B and the rest the pools skip it or bring the full beat (measured: 7 of 7 there, where the
         # drums-only style came out 10-50 dB too thin), so those get the full build
         mode = "soft" if quiet_open and info.get("layer", True) else "full"
-        tension = False      # no snare-roll / riser build: it was used too often and sounded forced. DJ-pool intros run the beat straight into the song
+        # the snare build only where it belongs: a song that hits hard when it comes in, in genres DJs build
+        # into (not ballads, slow R&B, country or rock), at a tempo where a 16th roll sounds right
+        tension = (mode != "soft" and not pick and big_entry and info.get("top", "") in BUILD_GENRES
+                   and 90 <= float(info.get("bpm") or 0) <= 150)
         # a few versions from the same stretch of the song, and the one that scores best is kept: the 4-bar
         # loop from its first or second half, or the 8 bars played straight through
         options = {"loop A": [src + (j % 4) for j in range(gen)]} if gen >= 8 else {"straight": list(range(src, src + gen))}
@@ -2778,7 +2863,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         if len(built) > 1:
             log(f"intro versions: " + "; ".join(f"{b[1]} {b[0]:.2f} ({b[3]})" for b in built))
         style = {"soft": "drums into the soft opening",
-                 "full": "the song's beat and melody"}[mode] + (", tension bar" if tension else "") + tag
+                 "full": "the song's beat and melody"}[mode] + (", snare build into the song" if tension else "") + tag
         if len(built) > 1:
             style += f", best of {len(built)} versions ({built[0][1]})"
         cue = "Beat In"

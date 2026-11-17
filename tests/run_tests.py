@@ -121,6 +121,19 @@ def run():
     rp, what, mv = d.repair_intro(hole, gb, off, 120.0)
     check("a beat missing from the intro filled back in", any("missing hit" in w for w in what), str(what))
 
+    # snare build: the song's own snare rolls on the exact grid over the last 2 beats (8ths, then 16ths)
+    n_ = SR * 2; q_ = n_ // 4
+    sb_ = np.zeros((n_, 2), "float32")
+    for b_ in (1, 3):
+        t_ = b_ * q_ + int(0.01 * SR)
+        sb_[t_:t_ + 2000] += (np.random.default_rng(b_).standard_normal((2000, 2)) * np.linspace(1, 0, 2000)[:, None] * 0.5).astype("float32")
+    tb_ = d.tension_bar(sb_, np.zeros_like(sb_), [sb_])
+    env_ = np.convolve(np.abs(tb_).mean(axis=1), np.ones(100) / 100, "same")
+    on_ = [round((i - n_ // 2) / (n_ / 16), 2) for i in range(n_ // 2, n_) if env_[i] > 0.02 and env_[i - 1] <= 0.02]
+    check("snare build lands on the grid (8ths then 16ths, with the song's own feel)",
+          len(on_) == 6 and all(abs(o - round(o) - 0.07) < 0.03 for o in on_) and [round(o) for o in on_] == [0, 2, 4, 5, 6, 7], str(on_))
+    check("snare build has no silence before the song", float(np.abs(tb_[-n_ // 16:]).max()) > 0.01)
+
     # handover lock: a song whose beat comes in late gets moved onto the beat
     orig, stems, bars, info = song(late_from=4)
     a, gb, style, cue, off = d.build_intro_bars(orig, stems, bars, dict(info), 8)
