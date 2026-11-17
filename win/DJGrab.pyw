@@ -115,6 +115,47 @@ class Runner(QObject):
             self.proc.terminate()
 
 
+def _song_key(path):
+    import re, unicodedata
+    k = unicodedata.normalize("NFC", Path(path).stem).lower()
+    k = re.sub(r"\s*[\(\[].*?[\)\]]", "", k)
+    return re.sub(r"\s+", " ", k).strip()
+
+
+def _edit_list(name, add=None, remove=None):
+    f = HOME / name
+    try:
+        keys = json.loads(f.read_text())
+    except Exception:
+        keys = []
+    if add and add not in keys:
+        keys.append(add)
+    if remove:
+        keys = [k for k in keys if k != remove]
+    HOME.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(keys))
+
+
+def use_original(song, intro):
+    """No intro for this song: its intro version moves to _To Delete (nothing is deleted), and it won't get one again."""
+    k = _song_key(song)
+    _edit_list("no_intro.json", add=k)
+    _edit_list("force_intro.json", remove=k)
+    if intro and os.path.exists(intro):
+        if PLAYER.playing == intro:
+            PLAYER.stop()
+        dest = Path(intro).parent / "_To Delete" / "DJ Grab intros not needed"
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(intro, dest / Path(intro).name)
+
+
+def make_intro(song):
+    """An intro for a song DJ Grab thought didn't need one, now and always."""
+    k = _song_key(song)
+    _edit_list("force_intro.json", add=k)
+    _edit_list("no_intro.json", remove=k)
+
+
 class Player:
     """One song preview at a time, from anywhere in the app."""
     def __init__(self):
@@ -137,6 +178,13 @@ class Player:
         if self.p is not None:
             self.p.stop()
         self.playing = None
+
+    def position(self):
+        return (self.p.position() / 1000.0, self.p.duration() / 1000.0) if self.p is not None and self.playing else (0.0, 0.0)
+
+    def seek(self, secs):
+        if self.p is not None and self.playing:
+            self.p.setPosition(int(secs * 1000))
 
 
 PLAYER = Player()
@@ -354,7 +402,9 @@ class IntrosTab(QWidget):
         self.start_b = QPushButton("Start"); self.start_b.clicked.connect(self.start_folder)
         self.pause_b = QPushButton("Pause"); self.pause_b.clicked.connect(self.pause); self.pause_b.hide()
         self.songs_b = QPushButton("Songs"); self.songs_b.clicked.connect(self.list_songs)
-        for w in (self.folder, pick, self.start_b, self.pause_b, self.songs_b):
+        self.redo_b = QPushButton("Redo all"); self.redo_b.clicked.connect(lambda: self.start_folder(redo=True))
+        self.redo_b.setToolTip("Run every song in this folder again with the newest rules, including songs already done")
+        for w in (self.folder, pick, self.start_b, self.pause_b, self.redo_b, self.songs_b):
             top.addWidget(w)
         v.addLayout(top)
         self.cur = QLabel(""); self.cur.setFont(QFont("", 10, QFont.Bold))
@@ -406,7 +456,7 @@ class IntrosTab(QWidget):
             it = QListWidgetItem(Path(p).stem); it.setData(Qt.UserRole, p); self.hits.addItem(it)
         self.hits.setMaximumHeight(320); self.hits.show()
 
-    def queue_intro(self, path):
+    def queue_intro(self, path, force=False):
         if self.runner:
             if path not in self.waiting:
                 self.waiting.append(path)
@@ -414,15 +464,17 @@ class IntrosTab(QWidget):
             return
         self.run(["djtools.py", "intro", path, "--json", "--bars", str(S["introBars"])], Path(path).stem)
 
-    def start_folder(self):
+    def start_folder(self, redo=False):
         args = ["djtools.py", "batch", "--root", self.folder.text(), "--bars", str(S["introBars"]), "--json"]
+        if redo:
+            args.append("--redo")
         if not S["makeIntros"]:
             args.append("--no-intro")
         self.run(args, Path(self.folder.text()).name)
 
     def run(self, args, label):
         self.cur.setText(f"Starting: {label}…"); self.bar.setRange(0, 0); self.bar.show(); self.stage.setText("")
-        self.start_b.hide(); self.pause_b.show()
+        self.start_b.hide(); self.redo_b.hide(); self.pause_b.show()
         self.runner = Runner(args)
         self.runner.event.connect(self.on_event)
         self.runner.finished.connect(self.on_finished)
@@ -462,11 +514,22 @@ class IntrosTab(QWidget):
             h.addWidget(play_button(song, "Original"))
         if e.get("intro") and os.path.exists(e["intro"]):
             h.addWidget(play_button(e["intro"], "Intro"))
+            u = QPushButton("Use original")
+            u.setToolTip("Remove this intro version (moved to _To Delete) and keep only the original")
+            def _orig(_=False, s_=song, i_=e["intro"], f_=f):
+                use_original(s_, i_); f_.hide()
+            u.clicked.connect(_orig); h.addWidget(u)
+        elif song and os.path.exists(song) and e.get("event") == "done" and "intro" not in Path(song).stem.lower():
+            mk = QPushButton("Make intro")
+            mk.setToolTip("DJ Grab thought this song didn't need an intro. Make one anyway (and always for this song)")
+            def _make(_=False, s_=song, f_=f):
+                make_intro(s_); f_.hide(); self.queue_intro(s_, force=True)
+            mk.clicked.connect(_make); h.addWidget(mk)
         self.results.insertWidget(0, f)
 
     def on_finished(self, code, err):
         self.runner = None
-        self.bar.hide(); self.pause_b.hide(); self.start_b.show()
+        self.bar.hide(); self.pause_b.hide(); self.start_b.show(); self.redo_b.show()
         self.cur.setText("Done" if code == 0 else "Paused" if code in (1, 15, -15) and not err.strip() else "Stopped: " + (err.strip().splitlines() or [""])[-1])
         self.stage.setText("")
         if self.waiting:
@@ -497,8 +560,14 @@ class Window(QMainWindow):
         self.update_l = QLabel(""); self.update_b = QPushButton("Install update"); self.update_b.hide()
         self.update_b.clicked.connect(self.install_update)
         stop = QPushButton("■ Stop sound"); stop.clicked.connect(PLAYER.stop)
+        from PySide6.QtWidgets import QSlider
+        self.seek = QSlider(Qt.Horizontal); self.seek.setMinimumWidth(160); self.seek.setRange(0, 1000); self.seek.hide()
+        self.seek_l = QLabel(""); self.seek_l.setStyleSheet("color: gray"); self.seek_l.hide()
+        self.seek.sliderReleased.connect(lambda: PLAYER.seek(self.seek.value() / 1000 * PLAYER.position()[1]))
+        tick = QTimer(self); tick.timeout.connect(self.update_seek); tick.start(250)
         gear = QPushButton("Settings"); gear.clicked.connect(lambda: SetupDialog(self, first=False).exec())
-        bar.addWidget(self.update_l, 1); bar.addWidget(self.update_b); bar.addWidget(stop); bar.addWidget(gear)
+        bar.addWidget(self.update_l, 1); bar.addWidget(self.update_b); bar.addWidget(self.seek_l); bar.addWidget(self.seek)
+        bar.addWidget(stop); bar.addWidget(gear)
         v.addLayout(bar)
         tabs = QTabWidget()
         self.grab = GrabTab(self); self.intros = IntrosTab(self)
@@ -509,6 +578,15 @@ class Window(QMainWindow):
         self.latest = 0
         QTimer.singleShot(3000, self.check_update)
         t = QTimer(self); t.timeout.connect(self.check_update); t.start(3 * 3600 * 1000)
+
+    def update_seek(self):
+        pos, dur = PLAYER.position()
+        on = bool(PLAYER.playing) and dur > 0
+        self.seek.setVisible(on); self.seek_l.setVisible(on)
+        if on:
+            if not self.seek.isSliderDown():
+                self.seek.setValue(int(pos / dur * 1000))
+            self.seek_l.setText(f"{int(pos) // 60}:{int(pos) % 60:02d} / {int(dur) // 60}:{int(dur) % 60:02d}")
 
     def check_update(self):
         def work():

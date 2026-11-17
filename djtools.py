@@ -137,6 +137,16 @@ def _song_key(p):
     return re.sub(r"\s+", " ", s).strip()
 
 
+FORCE_INTRO = djgrab.APP_SUPPORT / "force_intro.json"     # "Make intro" on a song DJ Grab thought didn't need one
+
+
+def force_intro(p):
+    try:
+        return _song_key(p) in set(json.loads(FORCE_INTRO.read_text()))
+    except Exception:
+        return False
+
+
 def no_intro(p):
     try:
         keys = set(json.loads(NO_INTRO.read_text()))
@@ -3613,12 +3623,12 @@ def process(path, bars, make_intro=True):
         sig_parts = [f"{float(bpm):.2f}", str(int(round(float(bars_t[0]) * 100)))] + \
                     [f"{n}:{int(round(v * 20))}" for n, v in sorted(times.items()) if isinstance(v, float) and not n.startswith("_")]
         _top, _sub = path.parent.parent.name, path.parent.name
-        need = needs_intro(times, bar, dance=_top in LONG_INTRO_TOPS or _sub in LONG_INTRO_SUBS)
+        need = needs_intro(times, bar, dance=_top in LONG_INTRO_TOPS or _sub in LONG_INTRO_SUBS) or force_intro(path)
         # a short spoken or a cappella opening (up to 4 bars, no beat) and then 8 clean bars of the full beat
         # with no vocals (Timbaland's Give It To Me): the song already has its own DJ intro, so a made one
         # would just be a second intro in front of it
         own_intro = None
-        if need:
+        if need and not force_intro(path):
             sbi, v_, d_, nb_i = int(info["sb"]), info["voc"], info["drm"], int(info["nb"])
             dref_ = float(np.median(d_[d_ > 0])) if np.any(d_ > 0) else 0.0
             for j in range(sbi + 1, min(sbi + 5, nb_i - 8)):

@@ -2374,6 +2374,24 @@ final class ToolsStore: ObservableObject {
         }
         if running && currentPath == song { restart() }
     }
+    /// "Make intro" on a song DJ Grab decided didn't need one: remembered, then the song runs again
+    func makeIntro(song: String) {
+        let file = supportDir.appendingPathComponent("force_intro.json")
+        var keys = (try? JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String]) ?? []
+        var k = ((song as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased()
+        k = k.replacingOccurrences(of: "\\s*[\\(\\[].*?[\\)\\]]", with: "", options: .regularExpression)
+        k = k.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        if !keys.contains(k) { keys.append(k) }
+        if let d = try? JSONSerialization.data(withJSONObject: keys) { try? d.write(to: file) }
+        // it may be on the "no intro" list from earlier: taken off it
+        let nf = supportDir.appendingPathComponent("no_intro.json")
+        if var no = (try? JSONSerialization.jsonObject(with: Data(contentsOf: nf)) as? [String]) {
+            no.removeAll { $0 == k }
+            if let d = try? JSONSerialization.data(withJSONObject: no) { try? d.write(to: nf) }
+        }
+        results.removeAll { $0.song == song && !$0.madeIntro }
+        start(file: song)
+    }
     /// songs waiting that aren't part of the run going on now
     var notStarted: Int { running ? waiting.filter { !(lastFiles ?? []).contains($0) }.count : waiting.count }
     /// 👎 → "Try another": a new intro for this one song, from a version you haven't heard yet
@@ -2920,6 +2938,8 @@ struct FolderSongs: View {
                             }
                         }
                         .padding(.horizontal, 8).padding(.vertical, 3)
+                        SeekBar(path: p).padding(.horizontal, 8)
+                        if let ip = introFile(p) { SeekBar(path: ip).padding(.horizontal, 8) }
                     }
                 }
             }
@@ -3188,10 +3208,23 @@ struct ToolsView: View {
                         Text(r.name).lineLimit(1)
                         Text(r.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         if r.madeIntro, let ip = r.path { SeekBar(path: ip) }
+                        if let song = r.song ?? r.path?.replacingOccurrences(of: " (Intro).mp3", with: ".mp3"), song != r.path {
+                            SeekBar(path: song)                  // the original playing: its time bar too
+                        }
                     }
                     if !r.madeIntro, let song = r.song, FileManager.default.fileExists(atPath: song) {
                         Spacer()
                         PlayButton(path: song).help("Play the song (it didn't need an intro)")
+                        if r.ok && !song.lowercased().contains("intro") {
+                            Button { tools.makeIntro(song: song) } label: {
+                                VStack(spacing: 1) {
+                                    Image(systemName: "plus.circle").font(.system(size: 18))
+                                    Text("Make intro").font(.system(size: 9))
+                                }
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .help("DJ Grab thought this song didn't need an intro. Make one anyway (and always for this song)")
+                        }
                     }
                     if r.madeIntro && r.path != nil {
                         Spacer()
