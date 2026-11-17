@@ -3710,7 +3710,8 @@ def save_timing(path, T, mins, bpm, result, make_intro):
             "intro_wanted": bool(make_intro),
             "intro_made": bool(result.get("intro")),
             "built_twice": "building another" in note or bool(T.get("_rebuilt")),
-            "repaired": "repaired" in note or "repaired" in str(result.get("style", "")),
+            "repaired": "repaired" in note,
+            "flagged": note.startswith("Flagged"),
             "no_intro_reason": note if note.startswith(("Couldn't", "No intro", "Opens on")) else "",
             "devices": {"separation": DEVICES.get("demucs"), "beats": DEVICES.get("beats"),
                         "studio_stems": DEVICES.get("roformer")},
@@ -3960,38 +3961,46 @@ def process(path, bars, make_intro=True):
                             style += " · repaired: " + "; ".join(fixed_what)
                 except Exception:
                     log_exc("intro repair")
+                flagged = None
                 if any(f in SERIOUS for f in flags) and not use_claps:
-                    # built again another way (the next-best version from another stretch of the song); the
-                    # version with fewer problems is kept, and if it still isn't clean there's no intro
+                    # built again another way (the next-best version from another stretch of the song), up to
+                    # 3 versions in all; the version with the fewest problems is kept
                     log(f"{path.name}: intro check found {', '.join(flags)}, building another")
                     T["_rebuilt"] = 1
-                    try:
-                        REDO_TRIED.add(REDO_PICK or "")
-                        a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid={int(str(REDO_PICK).split(':')[0])} if REDO_PICK and str(REDO_PICK).split(':')[0].isdigit() else set()), bars)
-                        f2 = check_intro(a2[0], a2[1], a2[4], float(bpm), orig_song)
+                    picks = [REDO_PICK]
+                    for attempt in (2, 3):
+                        if not any(f in SERIOUS for f in flags):
+                            break
                         try:
-                            ra, rw, mv2 = repair_intro(a2[0], a2[1], a2[4], float(bpm))
-                            if rw:
-                                rf = check_intro(ra, a2[1], a2[4], float(bpm), _song_moved(orig_song, mv2))
-                                if sum(f in SERIOUS for f in rf) <= sum(f in SERIOUS for f in f2):
-                                    a2 = (ra, a2[1], a2[2] + " · repaired: " + "; ".join(rw), a2[3], a2[4]); f2 = rf
+                            for p_ in picks:
+                                REDO_TRIED.add(p_ or "")
+                            avoid = {int(str(p_).split(':')[0]) for p_ in picks if p_ and str(p_).split(':')[0].isdigit()}
+                            a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid=avoid), bars)
+                            picks.append(REDO_PICK)
+                            f2 = check_intro(a2[0], a2[1], a2[4], float(bpm), orig_song)
+                            try:
+                                ra, rw, mv2 = repair_intro(a2[0], a2[1], a2[4], float(bpm))
+                                if rw:
+                                    rf = check_intro(ra, a2[1], a2[4], float(bpm), _song_moved(orig_song, mv2))
+                                    if sum(f in SERIOUS for f in rf) <= sum(f in SERIOUS for f in f2):
+                                        a2 = (ra, a2[1], a2[2] + " · repaired: " + "; ".join(rw), a2[3], a2[4]); f2 = rf
+                            except Exception:
+                                log_exc("intro repair")
+                            log(f"{path.name}: version {attempt} check: {', '.join(f2) or 'clean'}")
+                            if sum(f in SERIOUS for f in f2) < sum(f in SERIOUS for f in flags):
+                                audio, ibars, style, half_cue, offset = a2
+                                flags = f2
                         except Exception:
-                            log_exc("intro repair")
-                        if sum(f in SERIOUS for f in f2) < sum(f in SERIOUS for f in flags):
-                            audio, ibars, style, half_cue, offset = a2
-                            flags = f2
-                    except Exception:
-                        log_exc("second intro")
-                    finally:
-                        REDO_TRIED.discard(REDO_PICK or "")
+                            log_exc(f"intro version {attempt}")
+                        finally:
+                            for p_ in picks:
+                                REDO_TRIED.discard(p_ or "")
                 if any(f in SERIOUS for f in flags):
-                    # quality first: if neither version is clean, no intro is kept (the song is left as it is)
-                    log(f"{path.name}: no intro kept ({', '.join(flags)})")
-                    result["note"] = "Couldn't make a clean intro (" + ", ".join(f for f in flags if f in SERIOUS) + "): song left as it is"
-                    if intro_path(path).exists() and is_our_intro(intro_path(path)):
-                        retire_intro(intro_path(path))
-                        result["note"] += " · old intro moved to _To Delete"
-                    audio = None
+                    # no version came out clean: the best one is still made, marked in the file (and listed in
+                    # logs/flagged_intros.jsonl) so the problem songs can be gathered and what they share fixed
+                    flagged = [f for f in flags if f in SERIOUS]
+                    log(f"{path.name}: intro kept but flagged ({', '.join(flags)})")
+                    style += " · FLAGGED: " + ", ".join(flagged)
                 if audio is not None:
                     tmp = work / "intro.wav"; save_wav(tmp, audio)
                     # built and tagged on the Mac's fast disk, then copied to the USB once (not rewritten there 3 times)
@@ -4011,6 +4020,16 @@ def process(path, bars, make_intro=True):
                     new.setall("TIT2", [TIT2(encoding=3, text=f"{title} (Intro)")])
                     new.setall("COMM", [COMM(encoding=3, lang="eng", desc="", text=cmt or "")])
                     new.setall("TXXX:DJ Grab intro", [TXXX(encoding=3, desc="DJ Grab intro", text=f"{bars} bars, {style}")])
+                    if flagged:
+                        new.setall("TXXX:DJ Grab check", [TXXX(encoding=3, desc="DJ Grab check", text="FLAGGED: " + ", ".join(flags))])
+                        try:
+                            with open(LOG.parent / "flagged_intros.jsonl", "a") as f_:
+                                f_.write(json.dumps({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "song": path.name,
+                                                     "folder": "/".join(path.parts[-3:-1]), "flags": flags, "bpm": float(bpm),
+                                                     "drift": float(g.get("drift", 0) or 0), "style": style,
+                                                     "versions_tried": 3}) + "\n")
+                        except Exception:
+                            log_exc("flag record")
                     new.save(str(part), v2_version=3)
                     # the intro file's bar lines: the intro's own bars, then the song's bars shifted to follow it
                     sb = info.get("song_from", info["sb"])        # where the song comes in (after any skipped quiet bars)
@@ -4039,7 +4058,8 @@ def process(path, bars, make_intro=True):
                     watch_grid(dst)
                     djgrab.queue_for_crate(dst)
                     result["intro"] = str(dst)
-                    result["note"] = "Intro: " + style + (" · check: " + ", ".join(flags) if flags else "")
+                    result["note"] = (("Flagged for review (" + ", ".join(flagged) + ") · ") if flagged else "") + \
+                        "Intro: " + style + (" · check: " + ", ".join(flags) if flags else "")
         elif make_intro:
             result["note"] = "Has an intro version"
         if make_intro and MAKE_OUTRO and not outro_path(path).exists():
