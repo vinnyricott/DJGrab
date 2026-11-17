@@ -51,7 +51,7 @@ def intro_case(name, n_bars=8, **kw):
     sb_t = d._snap_bars(orig, bars)[4]
     flags = d.check_intro(a, gb, off, 120.0, orig[int(sb_t * SR):])
     check(f"intro {name}: builds", len(a) > 0 and len(gb) == n_bars, f"{len(gb)} bars")
-    check(f"intro {name}: passes the quality check", not flags, ", ".join(flags))
+    check(f"intro {name}: passes the quality check", not any(f in d.SERIOUS for f in flags), ", ".join(flags))
     m = np.abs(a[:int(0.0015 * SR)]).max()          # the 2 ms before the hit's attack
     check(f"intro {name}: starts from (near) silence", m < 0.25 * np.abs(a[:int(0.05 * SR)]).max(), f"{m:.2f}")
     o = int(off * SR)

@@ -1008,7 +1008,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 15              # up to 3 intro versions; if none is clean the best is kept and flagged for review
+INTRO_RULE = 17              # no tension bar or filter sweep; clash check lines the song up first; repairs only when clean
 
 
 def _is_dance(p):
@@ -1029,9 +1029,29 @@ RULE_CHANGES = {
     13: lambda p, kind: Path(p).name in BEAT_JUMPED,         # intros whose beat jumped mid-intro: built again
     14: lambda p, kind: Path(p).name in BEAT_JUMPED,         # beat 1 cut off (hit ahead of the bar line): built again
     15: lambda p, kind: Path(p).name in NO_CLEAN_INTRO,      # left without an intro after 2 tries: 3 tries, best kept and flagged
+    16: lambda p, kind: Path(p).name in _flagged_before(),   # drums-clash check misread songs a few ms off: checked again
+    17: lambda p, kind: kind == "intro",                     # no snare-roll / riser build, no filter sweep: every intro again
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
+_FLAGGED = None
+
+
+def _flagged_before():
+    """Songs flagged up to the clash-check fix (17 Nov 2026, 18:30)."""
+    global _FLAGGED
+    if _FLAGGED is None:
+        _FLAGGED = set()
+        try:
+            for line in open(HERE / "logs" / "flagged_intros.jsonl"):
+                r = json.loads(line)
+                if r.get("when", "") < "2026-11-17 18:30":
+                    _FLAGGED.add(r["song"])
+        except Exception:
+            pass
+    return _FLAGGED
+
+
 NO_CLEAN_INTRO = {"17 - MK.mp3", "A Guy Called Gerald - Voodoo Ray.mp3", "After Hours - Waterfalls (4am Mix).mp3",
                   "Bee Gees - Stayin' Alive.mp3", "Before I Let Go - Frankie Beverly.mp3",
                   "Bill Withers - Just The Two Of Us (Tall Boys love nwantiti (ah ah ah) Edit).mp3",
@@ -1939,7 +1959,7 @@ def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0, dance=Fa
             # down at first, opening up to the full instrumental by the last bar: a slight build
             frac = i / max(1, n - 1)
             if frac < 1:
-                music = _lowpass(nd - bass, 8000.0 + 10000.0 * frac ** 2)   # everything above the bass (low mids too)
+                music = nd - bass                    # full range, no filter sweep: only the level comes up a touch
                 bar = d + bass + music * (0.8 + 0.2 * frac)
             else:
                 bar = d + nd
@@ -2689,9 +2709,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
                     parts[j] = parts[j].astype("float32").copy()
                     parts[j][:k_] -= _lowpass(nd_[:k_].astype("float32"), 220.0)
                 style += ", bass held back until Halfway"
-        if not pick and not quiet_open and big_entry:
-            apply_tension(parts, parts[-1].astype("float32"))
-            style += ", tension bar"
+        # (no tension bar: the song's own bars run straight into it)
         if carry:
             hq = hq_stems(orig, bt[src + gen], bt[min(need_to, nb)])
             drums = hq["drums"] if hq is not None else stems["drums"]
@@ -2726,7 +2744,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         # pop, R&B and the rest the pools skip it or bring the full beat (measured: 7 of 7 there, where the
         # drums-only style came out 10-50 dB too thin), so those get the full build
         mode = "soft" if quiet_open and info.get("layer", True) else "full"
-        tension = mode != "soft" and not pick and big_entry
+        tension = False      # no snare-roll / riser build: it was used too often and sounded forced. DJ-pool intros run the beat straight into the song
         # a few versions from the same stretch of the song, and the one that scores best is kept: the 4-bar
         # loop from its first or second half, or the 8 bars played straight through
         options = {"loop A": [src + (j % 4) for j in range(gen)]} if gen >= 8 else {"straight": list(range(src, src + gen))}
@@ -2760,7 +2778,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         if len(built) > 1:
             log(f"intro versions: " + "; ".join(f"{b[1]} {b[0]:.2f} ({b[3]})" for b in built))
         style = {"soft": "drums into the soft opening",
-                 "full": "the song's beat and melody, opening up"}[mode] + (", tension bar" if tension else "") + tag
+                 "full": "the song's beat and melody"}[mode] + (", tension bar" if tension else "") + tag
         if len(built) > 1:
             style += f", best of {len(built)} versions ({built[0][1]})"
         cue = "Beat In"
@@ -2873,7 +2891,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
     # under at the very start; the build comes from the music opening up, not from the volume. No dips (the
     # tension bar included), no jumps. Original-audio intros also open up from a muffled filter.
     if lens:
-        if style.startswith("original") and half:
+        if False and style.startswith("original") and half:      # no muffled filter opening (sounded like a cheap sweep)
             h = sum(lens[:half])
             dark = _lowpass(intro[:h], 900.0)
             w = np.linspace(0, 1, h, dtype="float32")[:, None] ** 1.5
@@ -3568,10 +3586,16 @@ def quality_gate(audio, ibars, offset, bpm, song=None):
             out.append("beat jumps")
         if song is not None and len(song) >= int(16 * beat * SR):
             a = onsets(audio[o0:o0 + int(16 * beat * SR)])
-            b = onsets(np.asarray(song[:int(16 * beat * SR)], dtype="float32"))
-            n = min(len(a), len(b))
-            extra = np.maximum(0.0, a[:n] - 2.0 * b[:n] - 0.02 * float(a[:n].max() + 1e-9))
-            if float(extra.sum()) > 0.25 * float(a[:n].sum() + 1e-9):
+            b0 = onsets(np.asarray(song[:int(16 * beat * SR) + int(0.05 * SR)], dtype="float32"))
+            # line the original up with the intro file's song part first (its start can sit a few ms off:
+            # bar lines snapped to the attack, the song start nudged onto the beat). Only hits still left
+            # over once they match up are extra
+            def extra_share(lag):
+                b = np.concatenate([np.zeros(-lag), b0])[:len(a)] if lag < 0 else b0[lag:lag + len(a)]
+                n = min(len(a), len(b))
+                ex = np.maximum(0.0, a[:n] - 2.0 * np.maximum(b[:n], np.roll(b[:n], 1)) - 0.02 * float(a[:n].max() + 1e-9))
+                return float(ex.sum()) / float(a[:n].sum() + 1e-9)
+            if min(extra_share(l) for l in range(-8, 9)) > 0.25:          # within 40 ms either way
                 out.append("drums clash")
     return out
 
@@ -3964,7 +3988,7 @@ def process(path, bars, make_intro=True):
                     fixed_a, fixed_what, mv = repair_intro(audio, ibars, offset, float(bpm))
                     if fixed_what:
                         ff = check_intro(fixed_a, ibars, offset, float(bpm), _song_moved(orig_song, mv))
-                        if sum(f in SERIOUS for f in ff) <= sum(f in SERIOUS for f in flags):
+                        if not any(f in SERIOUS for f in ff):        # a repair is only used when it comes out clean
                             log(f"{path.name}: intro repaired ({'; '.join(fixed_what)})" + (f", check now: {', '.join(ff)}" if ff else ""))
                             audio, flags = fixed_a, ff
                             style += " · repaired: " + "; ".join(fixed_what)
@@ -3991,7 +4015,7 @@ def process(path, bars, make_intro=True):
                                 ra, rw, mv2 = repair_intro(a2[0], a2[1], a2[4], float(bpm))
                                 if rw:
                                     rf = check_intro(ra, a2[1], a2[4], float(bpm), _song_moved(orig_song, mv2))
-                                    if sum(f in SERIOUS for f in rf) <= sum(f in SERIOUS for f in f2):
+                                    if not any(f in SERIOUS for f in rf):        # a repair is only used when it comes out clean
                                         a2 = (ra, a2[1], a2[2] + " · repaired: " + "; ".join(rw), a2[3], a2[4]); f2 = rf
                             except Exception:
                                 log_exc("intro repair")

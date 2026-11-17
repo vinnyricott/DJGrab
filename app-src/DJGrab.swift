@@ -3112,7 +3112,8 @@ struct ToolsView: View {
                     Divider()
                     Text("Choose Folder…").tag("__choose__")
                 }
-                .frame(width: 360)
+                .frame(minWidth: 150, maxWidth: 360)        // gives up room when more buttons show (Paused), so the window never overflows
+                .layoutPriority(-1)
                 .disabled(tools.running)
                 .onChange(of: folder) { v in
                     guard v == "__choose__" else { lastFolder = v; return }
