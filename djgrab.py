@@ -2837,6 +2837,14 @@ def main():
         update_ytdlp()
         return
     if args.fix_names:
+        try:      # a copy of your intro 👍 / 👎 next to the logs, so they can be looked at with the intro log
+            import shutil
+            src = APP_SUPPORT / "intro_ratings.json"
+            if src.exists():
+                (Path(__file__).resolve().parent / "logs").mkdir(exist_ok=True)
+                shutil.copy2(src, Path(__file__).resolve().parent / "logs" / "intro_ratings.json")
+        except Exception:
+            pass
         with _CrateLock():
             r = apply_renames()
             if r:

@@ -2027,6 +2027,11 @@ struct SettingsView: View {
             if ownerCopy {
                 Section("Admin") {
                     VStack(alignment: .leading, spacing: 2) {
+                        Button("Rate intros…") { RateIntrosWindow.open() }
+                        Text("Opens a list of every song with an intro version: play the original or the intro, then 👍 or 👎 (with what was wrong). The ratings go into the intro rules and the logs.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
                         Toggle("View as everyone else", isOn: Binding(
                             get: { UserDefaults.standard.bool(forKey: "viewAsShared") },
                             set: { UserDefaults.standard.set($0, forKey: "viewAsShared"); Store.shared.restartApp() }))
@@ -2332,6 +2337,137 @@ final class RatingStore: ObservableObject {
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
         ShareData.rating(song: r.name, path: r.song ?? p, details: r.text, value: nv)
+        if nv != -1 { reasons[p] = nil }
+    }
+    @Published var reasons: [String: Set<String>] = [:]
+    /// What was wrong with an intro rated 👎 (saved with the rating as "reasons").
+    func toggleReason(_ p: String, _ why: String) {
+        var r = reasons[p] ?? Set((entries.first { ($0["path"] as? String) == p }?["reasons"] as? [String]) ?? [])
+        if r.contains(why) { r.remove(why) } else { r.insert(why) }
+        reasons[p] = r
+        var a = ((try? JSONSerialization.jsonObject(with: (try? Data(contentsOf: file)) ?? Data("[]".utf8))) as? [[String: Any]]) ?? []
+        if let i = a.firstIndex(where: { ($0["path"] as? String) == p }) { a[i]["reasons"] = Array(r).sorted() }
+        if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
+        entries = a
+    }
+    func reasonsFor(_ p: String) -> Set<String> {
+        reasons[p] ?? Set((entries.first { ($0["path"] as? String) == p }?["reasons"] as? [String]) ?? [])
+    }
+}
+
+/// A window listing every song that has an intro version, to listen and rate them one after another.
+enum RateIntrosWindow {
+    static var window: NSWindow?
+    static func open() {
+        if let w = window { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
+                         styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        w.title = "Rate intros"
+        w.isReleasedWhenClosed = false
+        w.contentView = NSHostingView(rootView: RateIntros())
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window = w
+    }
+}
+
+struct IntroItem: Hashable { let song: String; let intro: String }
+
+struct RateIntros: View {
+    @ObservedObject private var tools = ToolsStore.shared
+    @ObservedObject private var ratings = RatingStore.shared
+    @State private var items: [IntroItem] = []
+    @State private var show = 0          // 0 not rated yet, 1 all, 2 👎, 3 👍
+    @State private var loading = true
+    static let whys = ["Beat jumps / off time", "Cut off at the start", "Doubled or clashing hits", "Bad build or effect",
+                       "Wrong part of the song", "Sounds muddy / artifacts", "Handover into the song", "Not needed"]
+    var shown: [IntroItem] {
+        items.filter { it in
+            let r = ratings.ratings[it.intro] ?? 0
+            return show == 1 || (show == 0 && r == 0) || (show == 2 && r == -1) || (show == 3 && r == 1)
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Picker("", selection: $show) {
+                    Text("Not rated").tag(0); Text("All").tag(1); Text("👎").tag(2); Text("👍").tag(3)
+                }
+                .pickerStyle(.segmented).frame(maxWidth: 320)
+                Spacer()
+                Text(loading ? "Finding intros…" : "\(shown.count) of \(items.count) intros").foregroundStyle(.secondary).monospacedDigit()
+                StopSoundButton()
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(shown, id: \.intro) { it in row(it) }
+                }
+            }
+        }
+        .padding(12)
+        .frame(minWidth: 560, minHeight: 420)
+        .onAppear(perform: load)
+    }
+    @ViewBuilder func row(_ it: IntroItem) -> some View {
+        let r = ratings.ratings[it.intro] ?? 0
+        let name = ((it.song as NSString).lastPathComponent as NSString).deletingPathExtension
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(name).lineLimit(1)
+                    Text(((it.song as NSString).deletingLastPathComponent as NSString).lastPathComponent)
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(spacing: 1) { PlayButton(path: it.song); Text("Original").font(.system(size: 9)).foregroundStyle(.secondary) }
+                VStack(spacing: 1) { PlayButton(path: it.intro); Text("Intro").font(.system(size: 9)).foregroundStyle(.secondary) }
+                Button { ratings.rate(result(it, name), 1) } label: { Text("👍").font(.system(size: 20)).opacity(r == 1 ? 1 : 0.35) }
+                    .buttonStyle(.plain).help("Good intro")
+                Button { ratings.rate(result(it, name), -1) } label: { Text("👎").font(.system(size: 20)).opacity(r == -1 ? 1 : 0.35) }
+                    .buttonStyle(.plain).help("Something's wrong with this intro")
+            }
+            SeekBar(path: it.intro)
+            if r == -1 {
+                let chosen = ratings.reasonsFor(it.intro)
+                HStack(spacing: 4) {
+                    Text("What's wrong:").font(.caption).foregroundStyle(.secondary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(Self.whys, id: \.self) { w in
+                                Button(w) { ratings.toggleReason(it.intro, w) }
+                                    .font(.caption)
+                                    .buttonStyle(.bordered)
+                                    .tint(chosen.contains(w) ? .pink : .gray)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.current.panel))
+    }
+    private func result(_ it: IntroItem, _ name: String) -> ToolResult {
+        ToolResult(name: name, text: "", ok: true, path: it.intro, madeIntro: true, song: it.song)
+    }
+    private func load() {
+        let base = isAdmin ? tools.libraryRoot : Store.shared.outputFolder
+        loading = true
+        DispatchQueue.global().async {
+            var out: [IntroItem] = []
+            if let en = FileManager.default.enumerator(atPath: base) {
+                for case let f as String in en {
+                    let name = (f as NSString).lastPathComponent
+                    if f.hasPrefix("_") || f.contains("/_") || name.hasPrefix(".") { continue }
+                    guard name.hasSuffix(" (Intro).mp3") else { continue }
+                    let song = base + "/" + String(f.dropLast(" (Intro).mp3".count)) + ".mp3"
+                    if FileManager.default.fileExists(atPath: song) { out.append(IntroItem(song: song, intro: base + "/" + f)) }
+                }
+            }
+            out.sort { ($0.song as NSString).lastPathComponent.localizedCaseInsensitiveCompare(($1.song as NSString).lastPathComponent) == .orderedAscending }
+            DispatchQueue.main.async { items = out; loading = false }
+        }
     }
 }
 
