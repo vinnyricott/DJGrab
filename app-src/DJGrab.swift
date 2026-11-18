@@ -2002,8 +2002,7 @@ struct SettingsView: View {
             }
             Section("Privacy") {
                 VStack(alignment: .leading, spacing: 2) {
-                    Toggle("Share song data for improvements", isOn: $shareData)
-                    Text("Shares your intro ratings (song, artist, genre, intro style, app version, and any comment you add) with DJ Grab's developer to improve intros for everyone.")
+                    Text("When you rate an intro, the rating (song, genre, what was wrong, your comment) and how DJ Grab made that intro are sent to DJ Grab's developer, so intros keep getting better.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -2222,11 +2221,8 @@ struct WelcomeView: View {
                 Text("Optional. For songs that start with vocals, DJ Grab also saves a copy with a DJ-style beat intro (\"Song (Intro).mp3\") so you can mix into it. The first time, it downloads about 1 GB of extra tools. You can turn this on or off later in Settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("Share song data for improvements", isOn: $share)
-                Text("Shares your intro ratings (song, artist, genre, and any comment you add) to improve intros for everyone. You can change this anytime in Settings.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Text("When you rate an intro, the rating and how DJ Grab made that intro are sent to DJ Grab's developer to make intros better.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Get Started") {
@@ -2270,11 +2266,33 @@ enum DJAppPicker {
 /// everyone. Sent: song, artist, genre folder, the kind of intro, the rating, the app version, and a comment if you write one. Nothing else.
 /// Until the form is set up (formURL still has FORM_ID), ratings wait in a file and are sent later.
 enum ShareData {
-    static let formURL = "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
+    static let formURL = "https://docs.google.com/forms/d/e/1FAIpQLSeHPgyVeKGnFWfrhUwK1qXXzJXett_X9zqoGctw_s_7LPxC4g/formResponse"
+    /// A random id made once per computer, so ratings from the same person can be told apart (no name).
+    static var installID: String {
+        if let v = UserDefaults.standard.string(forKey: "installID") { return v }
+        let v = String(UUID().uuidString.prefix(8)); UserDefaults.standard.set(v, forKey: "installID"); return v
+    }
+    static let dataField = "entry.823349679"      // the form's one "Data" box: each rating as JSON (one row in the sheet)
     static let fields = ["song": "entry.SONG", "genre": "entry.GENRE", "intro": "entry.INTRO",
-                         "rating": "entry.RATING", "version": "entry.VERSION", "details": "entry.DETAILS"]
+                         "rating": "entry.RATING", "version": "entry.VERSION", "details": "entry.DETAILS",
+                         "reasons": "entry.REASONS", "comment": "entry.COMMENT", "log": "entry.LOG"]
+    /// That song's lines from this computer's intro log (how its intro was built), newest last.
+    static func logLines(for path: String) -> String {
+        let song = ((path as NSString).lastPathComponent as NSString).deletingPathExtension.replacingOccurrences(of: " (Intro)", with: "")
+        let cands = [supportDir.appendingPathComponent("engine/logs/intros.log"), supportDir.appendingPathComponent("logs/intros.log"),
+                     supportDir.appendingPathComponent("updates/logs/intros.log"),
+                     FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/DJ Grab/logs/intros.log")]
+        guard let f = cands.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let h = try? FileHandle(forReadingFrom: f) else { return "" }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > 3_000_000 ? size - 3_000_000 : 0)        // the last ~3 MB is plenty
+        let text = String(decoding: h.readDataToEndOfFile(), as: UTF8.self)
+        let lines = text.split(separator: "\n").filter { $0.contains(song) }
+        return lines.suffix(30).joined(separator: "\n")
+    }
     static let pending = supportDir.appendingPathComponent("share_pending.json")
-    static var on: Bool { UserDefaults.standard.object(forKey: "shareData") as? Bool ?? true }
+    static var on: Bool { true }       // always on (shared with a few friends): sent in the background
 
     static func rating(song: String, path: String, details: String, value: Int) {
         guard on else { return }
@@ -2282,9 +2300,14 @@ enum ShareData {
         let genre = parts.count >= 3 ? parts[parts.count - 3] + "/" + parts[parts.count - 2] : ""
         let kind = ["loop A", "loop B", "straight", "original instrumental", "drums into the soft opening"]
             .first { details.contains($0) } ?? ""
+        let e = RatingStore.shared.entries.first { ($0["path"] as? String) == path || ($0["path"] as? String)?.hasPrefix(String(path.dropLast(4))) == true }
         queue(["song": song, "genre": genre, "intro": kind,
                "rating": value > 0 ? "up" : value < 0 ? "down" : "cleared", "version": appVersion,
-               "details": String(details.prefix(900))])       // what the intro did: cues, how it was built
+               "details": String(details.prefix(900)),         // what the intro did: cues, how it was built
+               "reasons": ((e?["reasons"] as? [String]) ?? []).joined(separator: ", "),
+               "comment": (e?["comment"] as? String) ?? "",
+               "log": String(logLines(for: path).suffix(20000)),
+               "when": ISO8601DateFormatter().string(from: Date()), "user": installID])
         flush()
     }
     private static func load() -> [[String: String]] {
@@ -2302,11 +2325,12 @@ enum ShareData {
         save([])
         for row in rows {
             var c = URLComponents()
-            c.queryItems = row.compactMap { k, v in fields[k].map { URLQueryItem(name: $0, value: v) } }
+            let json = (try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            c.queryItems = [URLQueryItem(name: dataField, value: json)]
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            req.httpBody = c.percentEncodedQuery?.data(using: .utf8)
+            req.httpBody = c.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
             URLSession.shared.dataTask(with: req) { _, resp, err in
                 if err != nil || ((resp as? HTTPURLResponse)?.statusCode ?? 500) >= 400 { queue(row) }
             }.resume()
@@ -2343,9 +2367,9 @@ final class RatingStore: ObservableObject {
         }
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
-        ShareData.rating(song: r.name, path: r.song ?? p, details: r.text, value: nv)
         if nv != -1 { reasons[p] = nil }
         exportText()
+        share(p, name: r.name, song: r.song ?? p, details: r.text)
     }
     @Published var reasons: [String: Set<String>] = [:]
     /// What was wrong with an intro rated 👎 (saved with the rating as "reasons").
@@ -2358,6 +2382,7 @@ final class RatingStore: ObservableObject {
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
         exportText()
+        share(p)
     }
     /// Every rating (song, 👍/👎, what was wrong, your comment, how the intro was made) written as a plain
     /// text file next to DJ Grab's logs, rewritten the moment anything is rated, so they can be
@@ -2379,6 +2404,21 @@ final class RatingStore: ObservableObject {
         try? out.write(to: logs.appendingPathComponent("intro_ratings.txt"), atomically: true, encoding: .utf8)
         if let d = try? Data(contentsOf: file) { try? d.write(to: logs.appendingPathComponent("intro_ratings.json")) }
     }
+    private var sendTimers: [String: DispatchWorkItem] = [:]
+    /// Sent in the background 15 s after the last change to a rating (the thumb, what was wrong, the comment),
+    /// so one rating goes out once, complete.
+    func share(_ p: String, name: String? = nil, song: String? = nil, details: String? = nil) {
+        sendTimers[p]?.cancel()
+        let e = entries.first { ($0["path"] as? String) == p }
+        let nm = name ?? (e?["name"] as? String) ?? ((p as NSString).lastPathComponent as NSString).deletingPathExtension
+        let det = details ?? (e?["details"] as? String) ?? ""
+        let sg = song ?? p.replacingOccurrences(of: " (Intro).mp3", with: ".mp3")
+        let w = DispatchWorkItem { [weak self] in
+            ShareData.rating(song: nm, path: sg, details: det, value: self?.ratings[p] ?? 0)
+        }
+        sendTimers[p] = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: w)
+    }
     /// Your own words on what's wrong (or right) with an intro, saved with its rating.
     func setComment(_ p: String, _ text: String) {
         var a = ((try? JSONSerialization.jsonObject(with: (try? Data(contentsOf: file)) ?? Data("[]".utf8))) as? [[String: Any]]) ?? []
@@ -2388,6 +2428,7 @@ final class RatingStore: ObservableObject {
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
         exportText()
+        share(p)
     }
     func commentFor(_ p: String) -> String {
         (entries.first { ($0["path"] as? String) == p }?["comment"] as? String) ?? ""
@@ -2397,8 +2438,7 @@ final class RatingStore: ObservableObject {
     }
 }
 
-/// A line to say in your own words what's wrong with a rated intro (saved as you type; Return also sends it
-/// with the rating when "Share song data" is on).
+/// A line to say in your own words what's wrong with a rated intro (saved as you type, sent with the rating).
 struct RatingComment: View {
     let path: String
     var name: String = ""
@@ -2410,12 +2450,6 @@ struct RatingComment: View {
             .font(.caption)
             .onAppear { text = ratings.commentFor(path) }
             .onChange(of: text) { t in ratings.setComment(path, t) }
-            .onSubmit {
-                let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !t.isEmpty else { return }
-                ShareData.rating(song: name.isEmpty ? ((path as NSString).lastPathComponent as NSString).deletingPathExtension : name,
-                                 path: path, details: "Comment: " + t, value: ratings.ratings[path] ?? 0)
-            }
     }
 }
 
