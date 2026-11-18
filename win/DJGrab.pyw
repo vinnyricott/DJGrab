@@ -471,10 +471,10 @@ class IntrosTab(QWidget):
                 self.waiting.append(path)
             self.next_l.setText("Up next: " + ", ".join(Path(p).stem for p in self.waiting))
             return
-        self.run(["djtools.py", "intro", path, "--json", "--bars", str(S["introBars"])], Path(path).stem)
+        self.run(["djtools.py", "intro", path, "--json", "--bars", "8"], Path(path).stem)
 
     def start_folder(self, redo=False):
-        args = ["djtools.py", "batch", "--root", self.folder.text(), "--bars", str(S["introBars"]), "--json"]
+        args = ["djtools.py", "batch", "--root", self.folder.text(), "--bars", "8", "--json"]
         if redo:
             args.append("--redo")
         if not S["makeIntros"]:

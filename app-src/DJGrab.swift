@@ -1779,7 +1779,6 @@ struct SettingsView: View {
     @AppStorage("sortMode") private var sortMode = "off"
     @AppStorage("normalizeLUFS") private var normalize = -10.0
     @AppStorage("autoUpdate") private var autoUpdate = !ownerCopy     // on for everyone, off on Vinny's Mac
-    @AppStorage("introBars8") private var introBars = 0
     @AppStorage("hookTease") private var hookTease = "fits"
     @AppStorage("outroVersions") private var outros = false
     @ObservedObject private var storeObs = Store.shared
@@ -1914,15 +1913,6 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Button("Rate intros…") { RateIntrosWindow.open() }
                     Text("A list of every song with an intro version: play the original or the intro, then 👍 or 👎, tap what was wrong and add a comment in your own words. Your ratings teach DJ Grab which intros you like.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section("Intro length") {
-                VStack(alignment: .leading, spacing: 2) {
-                    Picker("Intro length", selection: $introBars) {
-                        Text("Auto (suggested)").tag(0); Text("4 bars").tag(4); Text("8 bars").tag(8); Text("16 bars").tag(16)
-                    }
-                    Text("Auto: 8 bars (32 beats) for every song; loop it in your DJ software if you need it longer. Choose a length to use it for every song instead.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -2797,11 +2787,7 @@ final class ToolsStore: ObservableObject {
                 return
             }
         }
-        if UserDefaults.standard.integer(forKey: "introBars8") == 32 { UserDefaults.standard.set(16, forKey: "introBars8") }  // 32 was removed
-        if !UserDefaults.standard.bool(forKey: "introAutoSet") {      // Auto is now the standard (once)
-            UserDefaults.standard.set(0, forKey: "introBars8"); UserDefaults.standard.set(true, forKey: "introAutoSet")
-        }
-        let bars = UserDefaults.standard.object(forKey: "introBars8") as? Int ?? 0      // 0 = Auto (by genre)
+        let bars = 8                 // every intro is 8 bars (32 beats): loop it in your DJ software for longer
         var args = [toolsPath, files == nil ? "batch" : mode]
         if let f = files { args += f }
         // Start on a folder that's already finished = do it again, overwriting the old cues and intros
@@ -3291,7 +3277,6 @@ struct ToolsView: View {
     @AppStorage("uiLook") private var look = "neon"
     @StateObject private var tools = ToolsStore.shared
     @StateObject private var ratings = RatingStore.shared
-    @AppStorage("introBars8") private var bars = 0
     @AppStorage("makeIntros") private var makeIntros = isAdmin      // others: off until they turn it on
     @AppStorage("autoIntros") private var autoIntros = true
     @AppStorage("introFolder") private var folder = ""
