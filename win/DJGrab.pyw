@@ -75,7 +75,7 @@ DJ_NOTES = {
 
 def engine_env():
     e = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
-             DJGRAB_DJAPP=S["djApp"], DJGRAB_HOOK=S["hookTease"], DJGRAB_OUTRO="1" if S["outroVersions"] else "0", DJGRAB_SPEED=S.get("workSpeed", "balanced"),
+             DJGRAB_DJAPP=S["djApp"], DJGRAB_HOOK="off" if S["hookTease"] == "off" else "fits", DJGRAB_OUTRO="1" if S["outroVersions"] else "0", DJGRAB_SPEED=S.get("workSpeed", "balanced"),
              DJGRAB_OUTPUT=S["output"], DJGRAB_PLAIN="1")
     e["PATH"] = str(HOME / "bin") + os.pathsep + e.get("PATH", "")
     return e
@@ -237,9 +237,9 @@ class SetupDialog(QDialog):
         self.intros = QCheckBox("Make intro versions (downloads about 1 GB of extra tools the first time)")
         self.intros.setChecked(S["makeIntros"]); f.addRow(self.intros)
         self.hook = QComboBox()
-        for k, n in (("off", "Off"), ("fits", "When it fits"), ("always", "Always")):
+        for k, n in (("fits", "Auto"), ("off", "Off")):
             self.hook.addItem(n, k)
-        self.hook.setCurrentIndex(["off", "fits", "always"].index(S["hookTease"]))
+        self.hook.setCurrentIndex(1 if S["hookTease"] == "off" else 0)
         f.addRow("Hook tease", self.hook)
         self.outro = QCheckBox("Outro versions (off by default)"); self.outro.setChecked(S["outroVersions"]); f.addRow(self.outro)
         self.upd = QCheckBox("Install updates automatically"); self.upd.setChecked(S["autoUpdate"]); f.addRow(self.upd)

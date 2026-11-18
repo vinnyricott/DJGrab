@@ -570,7 +570,7 @@ final class Store: ObservableObject {
         env["PATH"] = toolPATH + ":" + (env["PATH"] ?? "")
         env["PYTHONUNBUFFERED"] = "1"
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
-        env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") ?? "fits"
+        env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") == "off" ? "off" : "fits"   // Auto or Off
         env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
         env["DJGRAB_SPEED"] = UserDefaults.standard.string(forKey: "workSpeed") ?? "balanced"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
@@ -1919,9 +1919,9 @@ struct SettingsView: View {
             Section("Extras") {
                 VStack(alignment: .leading, spacing: 2) {
                     Picker("Hook tease", selection: $hookTease) {
-                        Text("Off").tag("off"); Text("When it fits").tag("fits"); Text("Always").tag("always")
+                        Text("Auto").tag("fits"); Text("Off").tag("off")
                     }
-                    Text("Plays 2 bars of the chorus vocal softly during the intro, then 4 bars of beat alone before the song, so the crowd hears what's coming. When it fits: only for hip hop, R&B, pop, latin, afro and caribbean songs with a short, clean, repeating hook that matches the intro's key, never when the song opens on its chorus, and it stops for a genre if you keep giving those intros 👎.")
+                    Text("Plays 2 bars of the chorus vocal softly during the intro, then 4 bars of beat alone before the song, so the crowd hears what's coming. Auto: only for hip hop, R&B, pop, latin, afro and caribbean songs with a short, clean, repeating hook that matches the intro's key, never when the song opens on its chorus, and it stops for a genre if you keep giving those intros 👎.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 2) {
@@ -2810,7 +2810,7 @@ final class ToolsStore: ObservableObject {
         env["PATH"] = toolPATH + ":" + (env["PATH"] ?? "")
         env["PYTHONUNBUFFERED"] = "1"
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
-        env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") ?? "fits"
+        env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") == "off" ? "off" : "fits"   // Auto or Off
         env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
         env["DJGRAB_SPEED"] = UserDefaults.standard.string(forKey: "workSpeed") ?? "balanced"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
