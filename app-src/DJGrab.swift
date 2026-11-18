@@ -764,7 +764,7 @@ final class Store: ObservableObject {
                 }
             }
             if Store.shared.tick % 60 == 5 { ShareData.flush() }          // every 5 min: send ratings that waited
-            if Store.shared.tick % 120 == 7 { RatingStore.shared.exportText() }   // every 10 min: ratings as a text file by the logs
+            if Store.shared.tick == 3 { RatingStore.shared.exportText() }    // once on opening (each rating also writes it)
             if Store.shared.tick == 2 || Store.shared.tick % 24 == 0 { ToolsStore.shared.tryWaiting() }   // 10 s after opening, then every 2 min
             if Store.shared.tick % 4 == 0 { Store.shared.flushCrates() }
             KeepAwake.update(busy: ToolsStore.shared.running || Store.shared.busy)
@@ -2345,6 +2345,7 @@ final class RatingStore: ObservableObject {
         entries = a
         ShareData.rating(song: r.name, path: r.song ?? p, details: r.text, value: nv)
         if nv != -1 { reasons[p] = nil }
+        exportText()
     }
     @Published var reasons: [String: Set<String>] = [:]
     /// What was wrong with an intro rated 👎 (saved with the rating as "reasons").
@@ -2356,9 +2357,10 @@ final class RatingStore: ObservableObject {
         if let i = a.firstIndex(where: { ($0["path"] as? String) == p }) { a[i]["reasons"] = Array(r).sorted() }
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
+        exportText()
     }
     /// Every rating (song, 👍/👎, what was wrong, your comment, how the intro was made) written as a plain
-    /// text file next to DJ Grab's logs, refreshed every 10 minutes while the app is open, so they can be
+    /// text file next to DJ Grab's logs, rewritten the moment anything is rated, so they can be
     /// looked at together with the intro log.
     func exportText() {
         let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/DJ Grab/logs")
@@ -2385,6 +2387,7 @@ final class RatingStore: ObservableObject {
         if t.isEmpty { a[i].removeValue(forKey: "comment") } else { a[i]["comment"] = t }
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
+        exportText()
     }
     func commentFor(_ p: String) -> String {
         (entries.first { ($0["path"] as? String) == p }?["comment"] as? String) ?? ""
