@@ -764,6 +764,7 @@ final class Store: ObservableObject {
                 }
             }
             if Store.shared.tick % 60 == 5 { ShareData.flush() }          // every 5 min: send ratings that waited
+            if Store.shared.tick % 120 == 7 { RatingStore.shared.exportText() }   // every 10 min: ratings as a text file by the logs
             if Store.shared.tick == 2 || Store.shared.tick % 24 == 0 { ToolsStore.shared.tryWaiting() }   // 10 s after opening, then every 2 min
             if Store.shared.tick % 4 == 0 { Store.shared.flushCrates() }
             KeepAwake.update(busy: ToolsStore.shared.running || Store.shared.busy)
@@ -2355,6 +2356,26 @@ final class RatingStore: ObservableObject {
         if let i = a.firstIndex(where: { ($0["path"] as? String) == p }) { a[i]["reasons"] = Array(r).sorted() }
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
+    }
+    /// Every rating (song, 👍/👎, what was wrong, your comment, how the intro was made) written as a plain
+    /// text file next to DJ Grab's logs, refreshed every 10 minutes while the app is open, so they can be
+    /// looked at together with the intro log.
+    func exportText() {
+        let logs = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/DJ Grab/logs")
+        guard FileManager.default.fileExists(atPath: logs.path) else { return }
+        let rows = ((try? JSONSerialization.jsonObject(with: (try? Data(contentsOf: file)) ?? Data("[]".utf8))) as? [[String: Any]]) ?? []
+        var out = "DJ Grab intro ratings, \(rows.count) songs, written \(ISO8601DateFormatter().string(from: Date()))\n\n"
+        for r in rows.sorted(by: { ($0["when"] as? String ?? "") < ($1["when"] as? String ?? "") }) {
+            let v = r["rating"] as? Int ?? 0
+            out += (v > 0 ? "UP   " : "DOWN ") + (r["when"] as? String ?? "") + "  " + (r["name"] as? String ?? "") + "\n"
+            out += "     file: " + (r["path"] as? String ?? "") + "\n"
+            if let rs = r["reasons"] as? [String], !rs.isEmpty { out += "     wrong: " + rs.joined(separator: ", ") + "\n" }
+            if let c = r["comment"] as? String, !c.isEmpty { out += "     comment: " + c + "\n" }
+            if let d = r["details"] as? String, !d.isEmpty { out += "     intro: " + d.replacingOccurrences(of: "\n", with: " ") + "\n" }
+            out += "\n"
+        }
+        try? out.write(to: logs.appendingPathComponent("intro_ratings.txt"), atomically: true, encoding: .utf8)
+        if let d = try? Data(contentsOf: file) { try? d.write(to: logs.appendingPathComponent("intro_ratings.json")) }
     }
     /// Your own words on what's wrong (or right) with an intro, saved with its rating.
     func setComment(_ p: String, _ text: String) {
