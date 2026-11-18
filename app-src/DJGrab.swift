@@ -1909,6 +1909,13 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section("Rate intros") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Button("Rate intros…") { RateIntrosWindow.open() }
+                    Text("A list of every song with an intro version: play the original or the intro, then 👍 or 👎, tap what was wrong and add a comment in your own words. Your ratings teach DJ Grab which intros you like.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Intro length") {
                 VStack(alignment: .leading, spacing: 2) {
                     Picker("Intro length", selection: $introBars) {
@@ -1995,7 +2002,7 @@ struct SettingsView: View {
             Section("Privacy") {
                 VStack(alignment: .leading, spacing: 2) {
                     Toggle("Share song data for improvements", isOn: $shareData)
-                    Text("Shares your intro ratings (song, artist, genre, intro style and app version) with DJ Grab's developer to improve intros for everyone.")
+                    Text("Shares your intro ratings (song, artist, genre, intro style, app version, and any comment you add) with DJ Grab's developer to improve intros for everyone.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -2026,11 +2033,6 @@ struct SettingsView: View {
             }
             if ownerCopy {
                 Section("Admin") {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Rate intros…") { RateIntrosWindow.open() }
-                        Text("Opens a list of every song with an intro version: play the original or the intro, then 👍 or 👎 (with what was wrong). The ratings go into the intro rules and the logs.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                     VStack(alignment: .leading, spacing: 2) {
                         Toggle("View as everyone else", isOn: Binding(
                             get: { UserDefaults.standard.bool(forKey: "viewAsShared") },
@@ -2221,7 +2223,7 @@ struct WelcomeView: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Share song data for improvements", isOn: $share)
-                Text("Shares your intro ratings (song, artist and genre) to improve intros for everyone. You can change this anytime in Settings.")
+                Text("Shares your intro ratings (song, artist, genre, and any comment you add) to improve intros for everyone. You can change this anytime in Settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -2264,7 +2266,7 @@ enum DJAppPicker {
 /// rules can be tuned to what you like.
 /// "Share song data for improvements" (Settings, on by default, and said on the welcome screen): each
 /// 👍/👎 is sent to Vinny's Google Sheet through a Google Form, so the intro rules can be improved for
-/// everyone. Sent: song, artist, genre folder, the kind of intro, the rating, the app version. Nothing else.
+/// everyone. Sent: song, artist, genre folder, the kind of intro, the rating, the app version, and a comment if you write one. Nothing else.
 /// Until the form is set up (formURL still has FORM_ID), ratings wait in a file and are sent later.
 enum ShareData {
     static let formURL = "https://docs.google.com/forms/d/e/FORM_ID/formResponse"
@@ -2329,10 +2331,14 @@ final class RatingStore: ObservableObject {
         let nv = ratings[p] == v ? 0 : v                    // tap the same thumb again to take it back
         ratings[p] = nv
         var a = ((try? JSONSerialization.jsonObject(with: (try? Data(contentsOf: file)) ?? Data("[]".utf8))) as? [[String: Any]]) ?? []
+        let old = a.first { ($0["path"] as? String) == p }
         a.removeAll { ($0["path"] as? String) == p }
         if nv != 0 {
-            a.append(["path": p, "name": r.name, "rating": nv, "details": r.text,
-                      "when": ISO8601DateFormatter().string(from: Date())])
+            var e: [String: Any] = ["path": p, "name": r.name, "rating": nv, "details": r.text,
+                                    "when": ISO8601DateFormatter().string(from: Date())]
+            if let c = old?["comment"] as? String, !c.isEmpty { e["comment"] = c }
+            if nv == -1, let rs = old?["reasons"] { e["reasons"] = rs }
+            a.append(e)
         }
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
@@ -2350,8 +2356,42 @@ final class RatingStore: ObservableObject {
         if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
         entries = a
     }
+    /// Your own words on what's wrong (or right) with an intro, saved with its rating.
+    func setComment(_ p: String, _ text: String) {
+        var a = ((try? JSONSerialization.jsonObject(with: (try? Data(contentsOf: file)) ?? Data("[]".utf8))) as? [[String: Any]]) ?? []
+        guard let i = a.firstIndex(where: { ($0["path"] as? String) == p }) else { return }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { a[i].removeValue(forKey: "comment") } else { a[i]["comment"] = t }
+        if let d = try? JSONSerialization.data(withJSONObject: a, options: [.prettyPrinted]) { try? d.write(to: file) }
+        entries = a
+    }
+    func commentFor(_ p: String) -> String {
+        (entries.first { ($0["path"] as? String) == p }?["comment"] as? String) ?? ""
+    }
     func reasonsFor(_ p: String) -> Set<String> {
         reasons[p] ?? Set((entries.first { ($0["path"] as? String) == p }?["reasons"] as? [String]) ?? [])
+    }
+}
+
+/// A line to say in your own words what's wrong with a rated intro (saved as you type; Return also sends it
+/// with the rating when "Share song data" is on).
+struct RatingComment: View {
+    let path: String
+    var name: String = ""
+    @ObservedObject private var ratings = RatingStore.shared
+    @State private var text = ""
+    var body: some View {
+        TextField("What's wrong with it? (optional)", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .font(.caption)
+            .onAppear { text = ratings.commentFor(path) }
+            .onChange(of: text) { t in ratings.setComment(path, t) }
+            .onSubmit {
+                let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { return }
+                ShareData.rating(song: name.isEmpty ? ((path as NSString).lastPathComponent as NSString).deletingPathExtension : name,
+                                 path: path, details: "Comment: " + t, value: ratings.ratings[path] ?? 0)
+            }
     }
 }
 
@@ -2444,6 +2484,7 @@ struct RateIntros: View {
                     }
                 }
             }
+            if r != 0 { RatingComment(path: it.intro, name: name) }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.current.panel))
@@ -3366,6 +3407,9 @@ struct ToolsView: View {
                         if r.madeIntro, let ip = r.path { SeekBar(path: ip) }
                         if let song = r.song ?? r.path?.replacingOccurrences(of: " (Intro).mp3", with: ".mp3"), song != r.path {
                             SeekBar(path: song)                  // the original playing: its time bar too
+                        }
+                        if r.madeIntro, let ip = r.path, ratings.ratings[ip] == -1 {
+                            RatingComment(path: ip, name: r.name)
                         }
                     }
                     if !r.madeIntro, let song = r.song, FileManager.default.fileExists(atPath: song) {
