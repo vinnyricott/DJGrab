@@ -121,6 +121,17 @@ def run():
     rp, what, mv = d.repair_intro(hole, gb, off, 120.0)
     check("a beat missing from the intro filled back in", any("missing hit" in w for w in what), str(what))
 
+    # a song with its own short intro (6 bars of beat before the vocals) gets it extended to 8, played as recorded
+    orig_, stems_, bars_, info_ = song(vox_from=10)
+    a_, gb_, st_, cue_, off_ = d.build_intro_bars(orig_, stems_, bars_, dict(info_), 8)
+    sbt_ = d._snap_bars(orig_, bars_)[4]
+    check("own 6-bar intro extended: 2 bars added in front", "extended to 8 bars" in st_ and len(gb_) == 2, st_)
+    o_ = int(off_ * SR); s_ = orig_[int(sbt_ * SR):]
+    check("own intro extended: the song plays from its real first bar, untouched",
+          float(np.abs(a_[o_ + 2000:o_ + 4 * SR] - s_[2000:4 * SR]).max()) < 0.02)
+    fl_ = d.check_intro(a_, gb_, off_, 120.0, s_)
+    check("own intro extended: passes the quality check", not any(f in d.SERIOUS for f in fl_), ", ".join(fl_))
+
     # snare build: the song's own snare rolls on the exact grid over the last 2 beats (8ths, then 16ths)
     n_ = SR * 2; q_ = n_ // 4
     sb_ = np.zeros((n_, 2), "float32")

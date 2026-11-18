@@ -1008,7 +1008,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 18              # snare build redone properly (own snare, exact grid, last 2 beats, only where it fits); no filter sweep
+INTRO_RULE = 19              # short own intros extended to 8 bars; album versions not trimmed like videos; snare build only where it fits
 
 
 def _is_dance(p):
@@ -1032,6 +1032,7 @@ RULE_CHANGES = {
     16: lambda p, kind: Path(p).name in _flagged_before(),   # drums-clash check misread songs a few ms off: checked again
     17: lambda p, kind: kind == "intro",                     # no snare-roll / riser build, no filter sweep: every intro again
     18: lambda p, kind: kind == "intro",                     # snare build redone: the song's own snare, on the grid, only where it fits
+    19: lambda p, kind: kind == "intro",                     # a song's own short intro extended to 8 bars; album versions not cut as videos
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
@@ -1695,6 +1696,12 @@ def analyse_bars(stems, bars, n_samples, official=None):
         if cands:
             best = min(cands, key=outside)
             if best > sb:
+                # only talking / skit bars are skipped. If the bars before that point are the song's own music
+                # (a longer album version, not a video), the song starts where its music does
+                musical = next((j for j in range(sb, best) if beat[j] > 0.3 * b90 and beat[j + 1] > 0.3 * b90), None)
+                if musical is not None:
+                    best = musical
+            if best > sb:
                 talk, sb = best - sb, best
             song_end = float(bars[max(best, sb)]) + official
     res["Start"] = t(sb)
@@ -2031,6 +2038,18 @@ def build_layers(drums, inst, dbars, ibars, mode, tension, bass_from=0, dance=Fa
         bass = _lowpass(nd, 220.0)
         if mode == "soft":
             bar = d
+        elif mode == "gentle":
+            # layered the way DJ-pool intros build: the beat alone, then the bass joins, then the music,
+            # so the intro starts lighter and grows into the song (no filters or effects)
+            q_ = n // 4 if n >= 4 else 1
+            if i < q_:
+                bar = d
+            elif i < 2 * q_:
+                bar = d + bass
+            elif i < n - 1:
+                bar = d + bass + (nd - bass) * 0.85
+            else:
+                bar = d + nd
         else:
             # the song's own backbeat and melody are there from the first bar (a bare drum loop sounds dull,
             # most of all in front of a high-energy song). DJ pools keep the whole instrumental of the hook in
@@ -2679,6 +2698,33 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
     Returns (audio, bar start times of the new bars, style, halfway cue name, seconds to the song's first bar)."""
     nb, sb, voc, beat, full, v90 = info["nb"], info["sb"], info["voc"], info["beat"], info["full"], info["v90"]
     anchor = info.get("anchor", sb)
+    # the song already has a short intro (a few bars of its own beat before the vocals): extend that to the
+    # full length by repeating its own opening bars in front of it, and play the song from its real first bar,
+    # so its opening and the vocals coming in are heard exactly as recorded
+    vin = next((i for i in range(sb, nb - 1) if voc[i] > 0.3 * v90 and voc[i + 1] > 0.3 * v90), None)
+    k = (vin - sb) if vin is not None else 0
+    ev0 = info.get("every")
+    if (not info.get("no_extend") and 1 <= k < n_bars and anchor == sb
+            and all(beat[i] >= 0.2 * full for i in range(sb, sb + k))          # soft openings too, as long as they keep time
+            and float(voc[sb:sb + k].max()) < 0.35 * v90 and info.get("drift", 0.0) <= 0.012):
+        bt = np.append(_snap_bars(orig, bars), len(orig) / SR)
+        add = n_bars - k
+        # repeat whole phrases of the opening (4 or 2 bars, or its first bar), starting from its first bar, so
+        # the added bars go round exactly like the song's own loop and end where the song's first bar follows
+        unit = next((u for u in (4, 2, 1) if u <= k and add % u == 0), 1)
+        lv = lambda i: 20 * np.log10(float(ev0[i]) + 1e-9) if ev0 is not None else 0.0
+        smooth = abs(lv(sb + unit) - lv(sb)) <= 4.0 if sb + unit < nb else True   # the phrase repeats (not a build)
+        if smooth:
+            src = [sb + (j % unit) for j in range(add)]
+            parts = [orig[int(round(bt[i] * SR)):int(round(bt[i + 1] * SR))].astype("float32") for i in src]
+            lens = [len(p) for p in parts]
+            gen_bars = np.concatenate([[0], np.cumsum(lens)[:-1]]) / SR
+            song = orig[int(round(bt[sb] * SR)):].astype("float32")
+            globals()["REDO_PICK"] = "ext"
+            info["song_from"] = sb
+            audio = _xjoin([_xjoin(parts), song])
+            return (audio, gen_bars, f"the song's own {k}-bar opening, extended to {n_bars} bars", "Halfway",
+                    sum(lens) / SR)
     pick = anchor - sb if 0 < anchor - sb <= 4 and anchor - sb < n_bars else 0
     if pick and float(voc[sb:anchor].max()) >= 0.35 * v90:
         pick = 0
@@ -2826,6 +2872,8 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         # pop, R&B and the rest the pools skip it or bring the full beat (measured: 7 of 7 there, where the
         # drums-only style came out 10-50 dB too thin), so those get the full build
         mode = "soft" if quiet_open and info.get("layer", True) else "full"
+        if mode == "full" and every is not None and lvl(sb, 4) < lvl(src, n_bars) - 2.0:
+            mode = "gentle"        # the song itself opens a little softer: the intro builds up to it instead of starting strong
         # the snare build only where it belongs: a song that hits hard when it comes in, in genres DJs build
         # into (not ballads, slow R&B, country or rock), at a tempo where a 16th roll sounds right
         tension = (mode != "soft" and not pick and big_entry and info.get("top", "") in BUILD_GENRES
@@ -2862,7 +2910,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         REDO_PICK = f"{src}:{built[0][1]}"
         if len(built) > 1:
             log(f"intro versions: " + "; ".join(f"{b[1]} {b[0]:.2f} ({b[3]})" for b in built))
-        style = {"soft": "drums into the soft opening",
+        style = {"soft": "drums into the soft opening", "gentle": "the song's beat, then bass, then melody",
                  "full": "the song's beat and melody"}[mode] + (", snare build into the song" if tension else "") + tag
         if len(built) > 1:
             style += f", best of {len(built)} versions ({built[0][1]})"
@@ -2995,7 +3043,10 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
             for i in range(n):
                 part = intro[starts[i]:starts[i + 1]]
                 body = part[:max(1, len(part) * 15 // 16)]        # ignore the silent 16th of a tension bar
-                target = entry - 0.5 * (1 - i / max(1, n - 1))     # as loud as the song (the build is in the music)
+                # a little under the song at first, rising to its level by the last bar, so the intro doesn't
+                # hit at full strength from the first beat (more for intros that build up their layers)
+                dip = 3.0 if style.startswith("the song's beat, then") else 1.5
+                target = entry - dip * (1 - i / max(1, n - 1))
                 gains.append(float(np.clip(target - 20 * np.log10(rms(body)), -12.0, 10.0)))
             env = np.ones(len(intro), "float32")
             ramp = int(0.01 * SR)
@@ -4093,7 +4144,7 @@ def process(path, bars, make_intro=True):
                             for p_ in picks:
                                 REDO_TRIED.add(p_ or "")
                             avoid = {int(str(p_).split(':')[0]) for p_ in picks if p_ and str(p_).split(':')[0].isdigit()}
-                            a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid=avoid), bars)
+                            a2 = build_intro_bars(orig, stems, bars_t, dict(info, avoid=avoid, no_extend="ext" in picks), bars)
                             picks.append(REDO_PICK)
                             f2 = check_intro(a2[0], a2[1], a2[4], float(bpm), orig_song)
                             try:
