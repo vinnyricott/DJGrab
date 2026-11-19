@@ -1008,7 +1008,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 20              # short own intros extended to 8 bars; album versions not trimmed like videos; snare build only where it fits
+INTRO_RULE = 21              # 8 bars exactly, then the song's vocals; short own intros extended; snare build only where it fits
 
 
 def _is_dance(p):
@@ -1034,6 +1034,7 @@ RULE_CHANGES = {
     18: lambda p, kind: kind == "intro",                     # snare build redone: the song's own snare, on the grid, only where it fits
     19: lambda p, kind: kind == "intro",                     # a song's own short intro extended to 8 bars; album versions not cut as videos
     20: lambda p, kind: kind == "intro" and bool(DJ_EDIT.search(Path(p).stem)),   # DJ edits: cues only, their intro version retired
+    21: lambda p, kind: kind == "intro",                     # 8 bars exactly, then straight into the song's vocals / main part
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
@@ -1055,6 +1056,9 @@ def _flagged_before():
     return _FLAGGED
 
 
+WRONG_LENGTH = {"The Supremes - You Can't Hurry Love.mp3", "Maze feat. Frankie Beverly - Before I Let Go.mp3",
+                "Cameo - Word Up!.mp3", "Marvin Gaye & Tammi Terrell - Ain't No Mountain High Enough.mp3",
+                "Green Day - Basket Case.mp3"}
 NO_CLEAN_INTRO = {"17 - MK.mp3", "A Guy Called Gerald - Voodoo Ray.mp3", "After Hours - Waterfalls (4am Mix).mp3",
                   "Bee Gees - Stayin' Alive.mp3", "Before I Let Go - Frankie Beverly.mp3",
                   "Bill Withers - Just The Two Of Us (Tall Boys love nwantiti (ah ah ah) Edit).mp3",
@@ -2182,6 +2186,63 @@ def _tilt(x, db=3.5):
     return (lo + (x - lo) * (10 ** (db / 20))).astype("float32")
 
 
+TONE_EDGES = [20, 60, 150, 400, 1000, 2500, 6000, 10000, 14000, 17000, 22050]
+
+
+def _band_levels(x, edges=TONE_EDGES):
+    m = x.mean(axis=1) if x.ndim == 2 else x
+    n = 8192
+    if len(m) < n:
+        return None
+    S = np.mean([np.abs(np.fft.rfft(m[i:i + n] * np.hanning(n))) ** 2 for i in range(0, len(m) - n, n // 2)], 0)
+    f = np.fft.rfftfreq(n, 1 / SR)
+    return np.array([10 * np.log10(S[(f >= lo) & (f < hi)].mean() + 1e-14) for lo, hi in zip(edges[:-1], edges[1:])])
+
+
+def _cutoff(x):
+    """Where a recording's sound stops (Hz): about 16 kHz for a 128 kbps download, 19-20 kHz for a good file."""
+    m = x.mean(axis=1) if x.ndim == 2 else x
+    n = 8192
+    if len(m) < n:
+        return 22050.0
+    S = np.mean([np.abs(np.fft.rfft(m[i:i + n] * np.hanning(n))) ** 2 for i in range(0, len(m) - n, n)], 0)
+    f = np.fft.rfftfreq(n, 1 / SR)
+    ref = S[(f > 1000) & (f < 4000)].mean()
+    ok = f[(S > ref * 1e-6) & (f > 4000)]
+    return float(ok.max()) if len(ok) else 22050.0
+
+
+def match_tone(parts, ref):
+    """Makes the intro sound like the song it leads into. The separated parts come out with their own tone:
+    sometimes duller, often with a fizzy top the real song doesn't have (on a 128 kbps download the model fills
+    in highs above 16 kHz the song never had, 10-20 dB of hiss and shimmer). Each band of the intro is set to
+    the song's own first bars (cuts up to 18 dB, boosts up to 6 dB, nothing where the song has nothing, overall
+    level kept), so the handover doesn't change sound and the intro can't be brighter than the source."""
+    x = np.concatenate(parts)
+    a, b = _band_levels(x), _band_levels(ref)
+    if a is None or b is None:
+        return parts
+    g = (b - a) - float(np.median((b - a)[3:6]))   # mids as the reference: the level stage sets the loudness
+    # above what the song itself has (past a low-bitrate file's cutoff, where its level falls off a cliff) the
+    # intro gets nothing either; elsewhere cuts up to 18 dB and boosts up to 6 dB
+    g = np.clip(g, -18.0, 6.0)
+    cut = _cutoff(ref)
+    cen = np.sqrt(np.array(TONE_EDGES[:-1]) * np.array(TONE_EDGES[1:]))
+    n = len(x)
+    pad = int(0.5 * SR)                            # filtered as one piece (no seams at the bar lines)
+    xp = np.concatenate([x, np.zeros((pad,) + x.shape[1:], x.dtype)])
+    F = np.fft.rfft(xp, axis=0)
+    f = np.fft.rfftfreq(len(xp), 1 / SR)
+    gain = 10 ** (np.interp(np.log10(np.maximum(f, 20.0)), np.log10(cen), g) / 20)
+    if cut < 19500:                                 # nothing above the song's own cutoff (a gentle 400 Hz slope)
+        gain *= np.clip((cut + 200 - f) / 400.0, 0.0, 1.0)
+    y = np.fft.irfft(F * (gain[:, None] if x.ndim == 2 else gain), n=len(xp), axis=0)[:n].astype("float32")
+    out, i = [], 0
+    for p in parts:
+        out.append(y[i:i + len(p)]); i += len(p)
+    return out
+
+
 def _drum_purity(x, k=17):
     """How cleanly a drum-stem bar came out of the separation: the share of its sound that is hits, not
     smeared, ringing leftovers of the vocals or music (what made Butter's snare sound "crappy"). 0..1"""
@@ -2407,7 +2468,7 @@ CLAP_NEXT = False
 HOOK_MODE = {"1": "fits", "0": "off"}.get(os.environ.get("DJGRAB_HOOK", "fits"), os.environ.get("DJGRAB_HOOK", "fits"))
 HOOK_TEASE = HOOK_MODE in ("fits", "always")     # Settings ▸ Intros ▸ Hook tease: Off / When it fits / Always
 HOOK_GENRES = {"Hip Hop", "R&B", "Pop", "Latin", "African", "Caribbean"}
-MAKE_OUTRO = os.environ.get("DJGRAB_OUTRO", "0") == "1"   # Settings ▸ Intros ▸ Outro versions
+MAKE_OUTRO = False          # outro versions are off (the code stays, nothing turns it on)
 
 
 def _clap_hit(orig, stems, bt, info):
@@ -2735,6 +2796,16 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
             audio = _xjoin([_xjoin(parts), song])
             return (audio, gen_bars, f"the song's own {k}-bar opening, extended to {n_bars} bars", "Halfway",
                     sum(lens) / SR)
+    if (not info.get("force_entry") and vin is not None and 1 <= k < n_bars and anchor == sb
+            and float(voc[sb:vin].max()) < 0.35 * v90):
+        # the song's own short opening isn't extended: the intro takes its place, so the song comes in where
+        # its vocals (its main part) start, right after the 8 bars, not 8 bars plus the song's own lead-in.
+        # A vocal pickup just before that bar line keeps its bar, so the first word isn't cut
+        q = vin - 1 if vin - 1 > sb and voc[vin - 1] >= 0.15 * v90 else vin
+        out = build_intro_bars(orig, stems, bars, dict(info, force_entry=q), n_bars)
+        info["song_from"] = q
+        return (out[0], out[1], out[2] + f", song comes in on its vocals ({q - sb} bars of its own opening replaced)",
+                out[3], out[4])
     pick = anchor - sb if 0 < anchor - sb <= 4 and anchor - sb < n_bars else 0
     if pick and float(voc[sb:anchor].max()) >= 0.35 * v90:
         pick = 0
@@ -2903,8 +2974,10 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
             parts_ = build_layers(drums, inst, [seg(drums, i, i + 1) for i in loop],
                                   [seg(inst, i, i + 1) for i in loop], mode, tension,
                                   bass_from=8 if n_bars >= 16 else 0, dance=bool(info.get("dance")))
-            if mode != "soft":
-                parts_ = [_tilt(p_) for p_ in parts_]
+            # the intro's tone set to the song's own first bars (replaces a fixed +3.5 dB brightening, which
+            # added to the separation's fizz: intros came out up to 20 dB brighter up top than their songs)
+            ref_ = orig[int(round(bt[sb] * SR)):int(round(bt[min(sb + 8, nb)] * SR))].astype("float32")
+            parts_ = match_tone(parts_, ref_) if len(ref_) > SR else parts_
             cost_, why_ = _intro_cost(parts_, loop, drums, seg, C_all, orig, bt, nb, sb,
                                       inst=inst if mode != "soft" else None, vocals=_vocals_of(stems))
             t_ = _taste()          # learned from your 👍 / 👎: the genre first, else across everything
@@ -3688,7 +3761,7 @@ def repair_intro(audio, ibars, offset, bpm):
     return (a if fixed else audio), fixed, moved
 
 
-SERIOUS = ("cut-off start", "beat jumps", "drums clash")
+SERIOUS = ("cut-off start", "beat jumps", "drums clash", "wrong length")
 
 
 def quality_gate(audio, ibars, offset, bpm, song=None):
@@ -3699,6 +3772,15 @@ def quality_gate(audio, ibars, offset, bpm, song=None):
       drums clash:   hits in the song's first bars that the original song doesn't have, off its beat"""
     out = []
     beat = 60.0 / bpm
+    try:
+        # exactly the bars it says (8), at the song's tempo: bars cut from a stretch where a live band plays a
+        # little faster or slower add up to the wrong length and won't line up with the song's beat grid
+        nb_ = len([t for t in ibars if float(t) < offset - beat])
+        if nb_ >= 2 and abs((offset - float(ibars[0])) - nb_ * 4 * beat) > 0.5 * beat:
+            log(f"intro is {(offset - float(ibars[0])) / (4 * beat):.2f} bars long instead of {nb_}")
+            out.append("wrong length")
+    except Exception:
+        pass
     try:                                   # every intro bar and the song's first 2 bars, each in time with the last
         st = [float(t) for t in list(ibars) if float(t) < offset - beat] + [offset + k * 4 * beat for k in range(3)]
         jb, pos = bar_jumps(audio, st, beat, detail=True)

@@ -75,7 +75,7 @@ DJ_NOTES = {
 
 def engine_env():
     e = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
-             DJGRAB_DJAPP=S["djApp"], DJGRAB_HOOK="off" if S["hookTease"] == "off" else "fits", DJGRAB_OUTRO="1" if S["outroVersions"] else "0", DJGRAB_SPEED=S.get("workSpeed", "balanced"),
+             DJGRAB_DJAPP=S["djApp"], DJGRAB_HOOK="off" if S["hookTease"] == "off" else "fits", DJGRAB_OUTRO="0", DJGRAB_SPEED=S.get("workSpeed", "balanced"),
              DJGRAB_OUTPUT=S["output"], DJGRAB_PLAIN="1")
     e["PATH"] = str(HOME / "bin") + os.pathsep + e.get("PATH", "")
     return e
@@ -241,7 +241,6 @@ class SetupDialog(QDialog):
             self.hook.addItem(n, k)
         self.hook.setCurrentIndex(1 if S["hookTease"] == "off" else 0)
         f.addRow("Hook tease", self.hook)
-        self.outro = QCheckBox("Outro versions (off by default)"); self.outro.setChecked(S["outroVersions"]); f.addRow(self.outro)
         self.upd = QCheckBox("Install updates automatically"); self.upd.setChecked(S["autoUpdate"]); f.addRow(self.upd)
         self.awake = QCheckBox("Keep the computer awake while working (the screen can still turn off)")
         self.awake.setChecked(S["preventSleep"]); f.addRow(self.awake)
@@ -264,7 +263,7 @@ class SetupDialog(QDialog):
         S.update(djApp=self.app.currentData(), output=self.out.text(), sortMode=self.sort.currentData(),
                  minQuality=self.q.currentData(), normalizeLUFS=self.norm.currentData(),
                  makeIntros=self.intros.isChecked(), hookTease=self.hook.currentData(),
-                 outroVersions=self.outro.isChecked(), autoUpdate=self.upd.isChecked(),
+                 autoUpdate=self.upd.isChecked(),
                  preventSleep=self.awake.isChecked(), workSpeed=self.speed.currentData(), welcomed=True)
         S.save()
         Path(S["output"]).mkdir(parents=True, exist_ok=True)

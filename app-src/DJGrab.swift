@@ -571,7 +571,7 @@ final class Store: ObservableObject {
         env["PYTHONUNBUFFERED"] = "1"
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
         env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") == "off" ? "off" : "fits"   // Auto or Off
-        env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
+        env["DJGRAB_OUTRO"] = "0"            // outro versions are off
         env["DJGRAB_SPEED"] = UserDefaults.standard.string(forKey: "workSpeed") ?? "balanced"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
         p.environment = env
@@ -1780,7 +1780,6 @@ struct SettingsView: View {
     @AppStorage("normalizeLUFS") private var normalize = -10.0
     @AppStorage("autoUpdate") private var autoUpdate = !ownerCopy     // on for everyone, off on Vinny's Mac
     @AppStorage("hookTease") private var hookTease = "fits"
-    @AppStorage("outroVersions") private var outros = false
     @ObservedObject private var storeObs = Store.shared
     @AppStorage("makeIntros") private var sharedIntros = false
     @AppStorage("uiLook") private var look = "neon"
@@ -1922,11 +1921,6 @@ struct SettingsView: View {
                         Text("Auto").tag("fits"); Text("Off").tag("off")
                     }
                     Text("Plays 2 bars of the chorus vocal softly during the intro, then 4 bars of beat alone before the song, so the crowd hears what's coming. Auto: only for hip hop, R&B, pop, latin, afro and caribbean songs with a short, clean, repeating hook that matches the intro's key, never when the song opens on its chorus, and it stops for a genre if you keep giving those intros 👎.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Toggle("Outro versions", isOn: $outros)
-                    Text("Off by default. When on, songs that end without a beat to mix out of also get \"Song (Outro).mp3\": the song until its vocals end, then 16 bars of its own beat with an Outro cue where the beat starts.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -2856,7 +2850,7 @@ final class ToolsStore: ObservableObject {
         env["PYTHONUNBUFFERED"] = "1"
         env["DJGRAB_DJAPP"] = UserDefaults.standard.string(forKey: "djApp") ?? "serato"
         env["DJGRAB_HOOK"] = UserDefaults.standard.string(forKey: "hookTease") == "off" ? "off" : "fits"   // Auto or Off
-        env["DJGRAB_OUTRO"] = UserDefaults.standard.bool(forKey: "outroVersions") ? "1" : "0"
+        env["DJGRAB_OUTRO"] = "0"            // outro versions are off
         env["DJGRAB_SPEED"] = UserDefaults.standard.string(forKey: "workSpeed") ?? "balanced"
         env["DJGRAB_OUTPUT"] = UserDefaults.standard.string(forKey: Keys.output) ?? defaultOutput
         if !isAdmin { env["DJGRAB_PLAIN"] = "1" }     // no renaming, no crates: only cues + intro versions

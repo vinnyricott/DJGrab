@@ -132,6 +132,12 @@ def run():
     fl_ = d.check_intro(a_, gb_, off_, 120.0, s_)
     check("own intro extended: passes the quality check", not any(f in d.SERIOUS for f in fl_), ", ".join(fl_))
 
+    # a short own opening that isn't extended is replaced: after the 8 bars the song comes in on its vocals
+    i2_ = dict(info_, no_extend=True)
+    a2_, gb2_, st2_, _, off2_ = d.build_intro_bars(orig_, stems_, bars_, i2_, 8)
+    check("8 bars, then straight into the vocals (own opening replaced)",
+          i2_.get("song_from") == 10 and len(gb2_) == 8 and "comes in on its vocals" in st2_, st2_)
+
     # snare build: the song's own snare rolls on the exact grid over the last 2 beats (8ths, then 16ths)
     n_ = SR * 2; q_ = n_ // 4
     sb_ = np.zeros((n_, 2), "float32")
