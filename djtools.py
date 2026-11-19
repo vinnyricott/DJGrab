@@ -1008,7 +1008,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 19              # short own intros extended to 8 bars; album versions not trimmed like videos; snare build only where it fits
+INTRO_RULE = 20              # short own intros extended to 8 bars; album versions not trimmed like videos; snare build only where it fits
 
 
 def _is_dance(p):
@@ -1033,6 +1033,7 @@ RULE_CHANGES = {
     17: lambda p, kind: kind == "intro",                     # no snare-roll / riser build, no filter sweep: every intro again
     18: lambda p, kind: kind == "intro",                     # snare build redone: the song's own snare, on the grid, only where it fits
     19: lambda p, kind: kind == "intro",                     # a song's own short intro extended to 8 bars; album versions not cut as videos
+    20: lambda p, kind: kind == "intro" and bool(DJ_EDIT.search(Path(p).stem)),   # DJ edits: cues only, their intro version retired
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
@@ -3891,9 +3892,23 @@ def save_timing(path, T, mins, bpm, result, make_intro):
         log_exc("timing record")
 
 
+DJ_EDIT = re.compile(r"(?<!radio )(?<!single )(?<!clean )(?<!dirty )(?<!album )(?<!short )(?<!explicit )\bedit\b", re.I)
+
+
 def process(path, bars, make_intro=True):
     from mutagen.id3 import ID3, TIT2, GEOB, COMM, TXXX
     path = Path(path)
+    # DJ / club edits are made to be mixed and come with their own DJ intro: cues only, no intro version
+    # (radio, single, clean and album edits are just shorter or cleaner versions, so they can still get one).
+    # "Make intro" on a song still makes one
+    dj_edit = bool(DJ_EDIT.search(path.stem)) and not force_intro(path)
+    if dj_edit:
+        make_intro = False
+        try:
+            if intro_path(path).exists() and is_our_intro(intro_path(path)):
+                retire_intro(intro_path(path))
+        except Exception:
+            pass
     if not bars:
         bars = auto_bars(path)           # Auto: 16 bars for dance music, 8 for the rest
     id3 = ID3(str(path))
