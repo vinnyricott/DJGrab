@@ -2264,7 +2264,7 @@ def _taste():
             ratings, tries = [], {}
         for r in ratings:
             p = unicodedata.normalize("NFC", r.get("path", "").replace(" (Intro).mp3", ".mp3"))   # rated = the intro
-            picks = tries.get(p)
+            picks = [x for x in (tries.get(p) or []) if isinstance(x, str) and ":" in x]   # ("ext" = an extended own intro: no kind)
             if not picks:
                 continue
             kind = picks[-1].split(":", 1)[1]
@@ -2755,7 +2755,7 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
     avoid = set(info.get("avoid", set()))     # source stretches already tried that left a gap in the intro
     if REDO_TRIED:                            # stretches where every version was already heard and turned down
         from collections import Counter
-        per = Counter(int(k.split(":")[0]) for k in REDO_TRIED)
+        per = Counter(int(k.split(":")[0]) for k in REDO_TRIED if k.split(":")[0].isdigit())
         avoid |= {b for b, n in per.items() if n >= (3 if n_bars >= 8 else 1)}
     solid = lambda i: i not in avoid and (drm is None or float(drm[i:i + n_bars].min()) >= 0.35 * dref)
     clean = [i for i in clean if solid(i)]
