@@ -2705,6 +2705,13 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
     vin = next((i for i in range(sb, nb - 1) if voc[i] > 0.3 * v90 and voc[i + 1] > 0.3 * v90), None)
     k = (vin - sb) if vin is not None else 0
     ev0 = info.get("every")
+    if 1 <= k < n_bars:                     # why a song's own short intro was or wasn't extended (to tune this)
+        why = [w for w, bad in (("asked for another version", info.get("no_extend")),
+                                ("song starts later than its first bar", anchor != sb),
+                                ("opening too quiet to keep time", not all(beat[i] >= 0.2 * full for i in range(sb, sb + k))),
+                                ("voice in the opening", float(voc[sb:sb + k].max()) >= 0.35 * v90),
+                                ("tempo drifts", info.get("drift", 0.0) > 0.012)) if bad]
+        log(f"own {k}-bar intro: " + ("extending it" if not why else "not extended (" + ", ".join(why) + ")"))
     if (not info.get("no_extend") and 1 <= k < n_bars and anchor == sb
             and all(beat[i] >= 0.2 * full for i in range(sb, sb + k))          # soft openings too, as long as they keep time
             and float(voc[sb:sb + k].max()) < 0.35 * v90 and info.get("drift", 0.0) <= 0.012):
@@ -2715,6 +2722,8 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
         unit = next((u for u in (4, 2, 1) if u <= k and add % u == 0), 1)
         lv = lambda i: 20 * np.log10(float(ev0[i]) + 1e-9) if ev0 is not None else 0.0
         smooth = abs(lv(sb + unit) - lv(sb)) <= 4.0 if sb + unit < nb else True   # the phrase repeats (not a build)
+        if not smooth:
+            log(f"own {k}-bar intro: not extended (it builds up, so repeating it would jump in level)")
         if smooth:
             src = [sb + (j % unit) for j in range(add)]
             parts = [orig[int(round(bt[i] * SR)):int(round(bt[i + 1] * SR))].astype("float32") for i in src]
