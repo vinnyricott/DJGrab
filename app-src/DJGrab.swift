@@ -2443,6 +2443,42 @@ struct RatingComment: View {
     }
 }
 
+/// Pops up after a 👎: what was wrong (tap any), your own words, or "Doesn't need an intro".
+struct RateNote: View {
+    let path: String           // the intro file
+    let name: String
+    let song: String           // the original
+    @ObservedObject private var ratings = RatingStore.shared
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("What's wrong with this intro?").font(.headline)
+            Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            let chosen = ratings.reasonsFor(path)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 6)], alignment: .leading, spacing: 6) {
+                ForEach(RateIntros.whys, id: \.self) { w in
+                    Button(w) { ratings.toggleReason(path, w) }
+                        .buttonStyle(.bordered)
+                        .tint(chosen.contains(w) ? .pink : .gray)
+                }
+            }
+            RatingComment(path: path, name: name)
+            HStack {
+                Button("Doesn't need an intro") {
+                    if !ratings.reasonsFor(path).contains("Not needed") { ratings.toggleReason(path, "Not needed") }
+                    ToolsStore.shared.noIntro(song: song, intro: path)
+                    dismiss()
+                }
+                .help("The song already works without one: its intro version moves to _To Delete and it won't get one again")
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
+    }
+}
+
 /// A window listing every song that has an intro version, to listen and rate them one after another.
 enum RateIntrosWindow {
     static var window: NSWindow?
@@ -2460,7 +2496,7 @@ enum RateIntrosWindow {
     }
 }
 
-struct IntroItem: Hashable { let song: String; let intro: String }
+struct IntroItem: Hashable, Identifiable { let song: String; let intro: String; var id: String { intro } }
 
 struct RateIntros: View {
     @ObservedObject private var tools = ToolsStore.shared
@@ -2468,6 +2504,7 @@ struct RateIntros: View {
     @State private var items: [IntroItem] = []
     @State private var show = 0          // 0 not rated yet, 1 all, 2 👎, 3 👍
     @State private var loading = true
+    @State private var note: IntroItem? = nil
     static let whys = ["Beat jumps / off time", "Cut off at the start", "Doubled or clashing hits", "Bad build or effect",
                        "Wrong part of the song", "Sounds muddy / artifacts", "Handover into the song", "Not needed"]
     var shown: [IntroItem] {
@@ -2496,6 +2533,9 @@ struct RateIntros: View {
         .padding(12)
         .frame(minWidth: 560, minHeight: 420)
         .onAppear(perform: load)
+        .sheet(item: $note) { it in
+            RateNote(path: it.intro, name: ((it.song as NSString).lastPathComponent as NSString).deletingPathExtension, song: it.song)
+        }
     }
     @ViewBuilder func row(_ it: IntroItem) -> some View {
         let r = ratings.ratings[it.intro] ?? 0
@@ -2512,8 +2552,13 @@ struct RateIntros: View {
                 VStack(spacing: 1) { PlayButton(path: it.intro); Text("Intro").font(.system(size: 9)).foregroundStyle(.secondary) }
                 Button { ratings.rate(result(it, name), 1) } label: { Text("👍").font(.system(size: 20)).opacity(r == 1 ? 1 : 0.35) }
                     .buttonStyle(.plain).help("Good intro")
-                Button { ratings.rate(result(it, name), -1) } label: { Text("👎").font(.system(size: 20)).opacity(r == -1 ? 1 : 0.35) }
+                Button { ratings.rate(result(it, name), -1); if ratings.ratings[it.intro] == -1 { note = it } } label: { Text("👎").font(.system(size: 20)).opacity(r == -1 ? 1 : 0.35) }
                     .buttonStyle(.plain).help("Something's wrong with this intro")
+                Button { ToolsStore.shared.noIntro(song: it.song, intro: it.intro); items.removeAll { $0 == it } } label: {
+                    Image(systemName: "nosign").font(.system(size: 15)).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Doesn't need an intro: the intro version moves to _To Delete and this song won't get one again")
             }
             SeekBar(path: it.intro)
             if r == -1 {
@@ -3278,6 +3323,7 @@ struct ToolsView: View {
     @AppStorage("uiLook") private var look = "neon"
     @StateObject private var tools = ToolsStore.shared
     @StateObject private var ratings = RatingStore.shared
+    @State private var noteFor: ToolResult? = nil
     @AppStorage("makeIntros") private var makeIntros = isAdmin      // others: off until they turn it on
     @AppStorage("autoIntros") private var autoIntros = true
     @AppStorage("introFolder") private var folder = ""
@@ -3441,6 +3487,10 @@ struct ToolsView: View {
                         .font(.caption)
                         .disabled(tools.running)
                         .help("Clear this list (doesn't touch your songs)")
+                        .sheet(item: $noteFor) { r in
+                            RateNote(path: r.path ?? "", name: r.name,
+                                     song: r.song ?? (r.path ?? "").replacingOccurrences(of: " (Intro).mp3", with: ".mp3"))
+                        }
                 }
             }
             List(tools.results) { r in
@@ -3525,7 +3575,7 @@ struct ToolsView: View {
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                             .contextMenu { Button("Undo 👎") { ratings.rate(r, -1) } }
                         } else {
-                            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { ratings.rate(r, -1) } } label: {
+                            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { ratings.rate(r, -1) }; noteFor = r } label: {
                                 Text("👎").font(.system(size: 22))
                                     .saturation(0.35).opacity(0.7)
                                     .padding(4)
