@@ -2796,8 +2796,9 @@ def build_intro_bars(orig, stems, bars, info, n_bars):
             audio = _xjoin([_xjoin(parts), song])
             return (audio, gen_bars, f"the song's own {k}-bar opening, extended to {n_bars} bars", "Halfway",
                     sum(lens) / SR)
-    if (not info.get("force_entry") and vin is not None and 1 <= k < n_bars and anchor == sb
+    if (not info.get("force_entry") and vin is not None and 2 <= k < n_bars and anchor == sb
             and float(voc[sb:vin].max()) < 0.35 * v90):
+        # (a 1-bar lead-in stays: vocals a bar after the 8 is fine, only a long wait isn't)
         # the song's own short opening isn't extended: the intro takes its place, so the song comes in where
         # its vocals (its main part) start, right after the 8 bars, not 8 bars plus the song's own lead-in.
         # A vocal pickup just before that bar line keeps its bar, so the first word isn't cut
