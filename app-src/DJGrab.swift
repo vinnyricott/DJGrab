@@ -2881,6 +2881,7 @@ final class ToolsStore: ObservableObject {
     // Stop and start the same run again right away (picks up engine updates; a redo carries on as a redo)
     private var restartPending = false
     private var lastFiles: [String]? = nil
+    var lastFilesPending: Bool { lastFiles != nil }      // the paused run was single songs, not a folder
     func restart() {
         guard running else { return }
         restartPending = true
@@ -3357,12 +3358,15 @@ struct ToolsView: View {
                         .help("Restart this run (picks up updates, carries on where it left off)")
                     Button("Pause") { tools.pause() }.fixedSize()
                 } else {
-                    if tools.userPaused {
+                    // Resume carries on the paused folder, so it only shows while that folder is the one picked;
+                    // pick another folder and Start runs that one instead
+                    let resumable = tools.userPaused && (tools.lastFilesPending || tools.folder == folder)
+                    if resumable {
                         Button { tools.resume() } label: { Label("Resume", systemImage: "play.fill") }
                             .buttonStyle(.borderedProminent).fixedSize()
                             .help("Carry on with the paused run where it left off")
                     }
-                    if tools.userPaused {
+                    if resumable {
                         Button(tools.isComplete(folder) ? "Redo" : "Start") { tools.folder = folder; tools.start() }
                             .fixedSize()
                     } else {
