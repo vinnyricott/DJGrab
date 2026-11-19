@@ -1008,7 +1008,7 @@ except ImportError:      # installed on first run by ensure_demucs()
     np = None
 HOP = 256
 ENGINE = "@30"
-INTRO_RULE = 21              # 8 bars exactly, then the song's vocals; short own intros extended; snare build only where it fits
+INTRO_RULE = 22              # 8 bars exactly, then the song's vocals; short own intros extended; snare build only where it fits
 
 
 def _is_dance(p):
@@ -1035,6 +1035,7 @@ RULE_CHANGES = {
     19: lambda p, kind: kind == "intro",                     # a song's own short intro extended to 8 bars; album versions not cut as videos
     20: lambda p, kind: kind == "intro" and bool(DJ_EDIT.search(Path(p).stem)),   # DJ edits: cues only, their intro version retired
     21: lambda p, kind: kind == "intro",                     # 8 bars exactly, then straight into the song's vocals / main part
+    22: lambda p, kind: kind == "intro" and Path(p).parent.parent.name not in SLOW_EXEMPT,   # slow songs: no intro
 }
 BEAT_JUMPED = {"Blackstreet - No Diggity - Uncensored.mp3", "Blackstreet feat. Dr. Dre & Queen Pen - No Diggity (Clean).mp3",
                "ROSE & Bruno Mars - APT. (Clean).mp3", "Chris Lorenzo & Kah-Lo - In This Bih'.mp3"}
@@ -3984,6 +3985,10 @@ def save_timing(path, T, mins, bpm, result, make_intro):
         log_exc("timing record")
 
 
+SLOW_BPM = 85.0                 # under this, no intro version (cues only)
+SLOW_EXEMPT = {"Hip Hop"}       # ...except these genres, mixed with intros at any tempo
+
+
 DJ_EDIT = re.compile(r"(?<!radio )(?<!single )(?<!clean )(?<!dirty )(?<!album )(?<!short )(?<!explicit )\bedit\b", re.I)
 
 
@@ -4181,9 +4186,16 @@ def process(path, bars, make_intro=True):
                     break
             if own_intro is not None:
                 need = False
+        # slow songs (ballads, slow country, slow R&B and pop) aren't mixed with a beat intro: cues only.
+        # Hip Hop is left out (slow trap reads as 65-80 BPM but is mixed like any rap song)
+        slow = (need and not force_intro(path) and float(bpm) < SLOW_BPM and _top not in SLOW_EXEMPT)
+        if slow:
+            need = False
         if make_intro and not need:
             early = times.get("Vocals") is not None and times["Vocals"] - times["Start"] < 7.75 * bar
             result["note"] = "Has a clean 8-bar intro" + (" (only ad-libs over the beat)" if early else "")
+            if slow:
+                result["note"] = f"Slow song ({float(bpm):.0f} BPM): no intro needed"
             if own_intro is not None:
                 result["note"] = f"Has its own 8-bar beat intro after a {own_intro - int(info['sb'])}-bar spoken opening"
             if intro_path(path).exists() and is_our_intro(intro_path(path)):
